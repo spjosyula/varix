@@ -2,7 +2,7 @@
 
 These prove the toolchain works: the package imports, the version is set,
 and the logging hierarchy is configured. Real behavior tests land alongside
-the features they cover, starting at C1.1.
+the features they cover.
 """
 
 import logging
