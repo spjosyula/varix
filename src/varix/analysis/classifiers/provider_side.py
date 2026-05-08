@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from varix.analysis._helpers import gather_step_runs, outputs_differ
 from varix.core import (
     AdapterCapabilities,
     Classification,
@@ -41,12 +42,12 @@ class ProviderSideClassifier:
         capabilities: AdapterCapabilities,
         metric: VarianceMetric,
     ) -> list[Finding]:
-        observations = _gather_step_runs(step_id, runs, replays)
+        observations = gather_step_runs(step_id, runs, replays)
         if len(observations) < 2:
             return []
 
         if not capabilities.exposes_fingerprint:
-            if not _outputs_differ(observations, metric):
+            if not outputs_differ(observations, metric):
                 return []
             return [
                 unavailable_finding(
@@ -84,23 +85,3 @@ class ProviderSideClassifier:
                 ),
             )
         ]
-
-
-def _gather_step_runs(
-    step_id: str,
-    runs: Sequence[PipelineRun],
-    replays: Sequence[StepRun],
-) -> list[StepRun]:
-    out: list[StepRun] = []
-    for run in runs:
-        for sr in run.step_runs:
-            if sr.step_id == step_id:
-                out.append(sr)
-                break
-    out.extend(sr for sr in replays if sr.step_id == step_id)
-    return out
-
-
-def _outputs_differ(observations: Sequence[StepRun], metric: VarianceMetric) -> bool:
-    first = observations[0].output
-    return any(not metric.equivalent(first, sr.output) for sr in observations[1:])
