@@ -7,10 +7,23 @@ A check raises `AdapterError` on violation; the message names the rule.
 from __future__ import annotations
 
 import copy
+import inspect
 from typing import Any
 
 from varix.core.adapter import Adapter
 from varix.core.errors import AdapterError
+
+_ASYNC_METHODS: tuple[str, ...] = ("pipeline_structure", "run_pipeline", "replay_step")
+
+
+def check_methods_are_async(adapter: Adapter) -> None:
+    """Each Protocol-declared `async def` method must actually be a coroutine function."""
+    for method_name in _ASYNC_METHODS:
+        if not inspect.iscoroutinefunction(getattr(adapter, method_name)):
+            raise AdapterError(
+                f"adapter method {method_name!r} must be `async def`; "
+                "Protocol declares it async but found a regular function"
+            )
 
 
 def check_capabilities_idempotent(adapter: Adapter) -> None:
@@ -67,6 +80,7 @@ async def check_replay_step_does_not_mutate_inputs(adapter: Adapter, sample_inpu
 
 async def validate_adapter(adapter: Adapter, sample_input: Any) -> None:
     """Run every conformance check. Raises `AdapterError` on first violation."""
+    check_methods_are_async(adapter)
     check_capabilities_idempotent(adapter)
     await check_pipeline_structure_stable(adapter, sample_input)
     await check_run_pipeline_aligns_with_structure(adapter, sample_input)

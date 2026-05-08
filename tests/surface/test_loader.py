@@ -76,3 +76,63 @@ def test_non_adapter_object_raises_type_error(tmp_path: Path) -> None:
     module_path.write_text("adapter = 'not an adapter'\n", encoding="utf-8")
     with pytest.raises(TypeError, match="Adapter protocol"):
         load_adapter(str(module_path))
+
+
+def test_sync_run_pipeline_method_rejected_at_load(tmp_path: Path) -> None:
+    module_path = tmp_path / "agent.py"
+    module_path.write_text(
+        "from typing import Any\n"
+        "from varix.core import AdapterCapabilities, PipelineRun, StepGraph, StepRun\n"
+        "from datetime import UTC, datetime\n"
+        "_T = datetime(2026, 5, 8, 12, 0, 0, tzinfo=UTC)\n"
+        "\n"
+        "class _BadlyTyped:\n"
+        "    def capabilities(self) -> AdapterCapabilities:\n"
+        "        return AdapterCapabilities()\n"
+        "    async def pipeline_structure(self, pi: Any) -> StepGraph:\n"
+        "        return StepGraph(steps=())\n"
+        "    def run_pipeline(self, pi: Any, seed: int | None = None) -> PipelineRun:\n"
+        "        return PipelineRun(run_id='r', step_runs=(),\n"
+        "            started_at=_T, finished_at=_T)\n"
+        "    async def replay_step(self, sid: str, fi: Any,\n"
+        "        seed: int | None = None) -> StepRun:\n"
+        "        raise NotImplementedError\n"
+        "\n"
+        "adapter = _BadlyTyped()\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(TypeError, match=r"run_pipeline.*async def"):
+        load_adapter(str(module_path))
+
+
+def test_sync_replay_step_method_rejected_at_load(tmp_path: Path) -> None:
+    module_path = tmp_path / "agent.py"
+    module_path.write_text(
+        "from typing import Any\n"
+        "from varix.core import AdapterCapabilities, PipelineRun, StepGraph, StepRun\n"
+        "from datetime import UTC, datetime\n"
+        "_T = datetime(2026, 5, 8, 12, 0, 0, tzinfo=UTC)\n"
+        "\n"
+        "class _BadlyTyped:\n"
+        "    def capabilities(self) -> AdapterCapabilities:\n"
+        "        return AdapterCapabilities()\n"
+        "    async def pipeline_structure(self, pi: Any) -> StepGraph:\n"
+        "        return StepGraph(steps=())\n"
+        "    async def run_pipeline(self, pi: Any, seed: int | None = None) -> PipelineRun:\n"
+        "        return PipelineRun(run_id='r', step_runs=(),\n"
+        "            started_at=_T, finished_at=_T)\n"
+        "    def replay_step(self, sid: str, fi: Any,\n"
+        "        seed: int | None = None) -> StepRun:\n"
+        "        raise NotImplementedError\n"
+        "\n"
+        "adapter = _BadlyTyped()\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(TypeError, match=r"replay_step.*async def"):
+        load_adapter(str(module_path))
+
+
+def test_fully_async_adapter_loads_cleanly() -> None:
+    """Regression: the FakeAdapter (all async) still loads after the new check."""
+    adapter = load_adapter("varix.adapters:FakeAdapter")
+    assert isinstance(adapter, Adapter)

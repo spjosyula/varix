@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+import inspect
 import os
 import sys
 from pathlib import Path
@@ -26,6 +27,7 @@ from typing import Any
 from varix.core import Adapter
 
 _DEFAULT_ATTRIBUTE = "adapter"
+_ASYNC_METHODS: tuple[str, ...] = ("pipeline_structure", "run_pipeline", "replay_step")
 
 
 def load_adapter(target: str) -> Adapter:
@@ -43,6 +45,13 @@ def load_adapter(target: str) -> Adapter:
 
     if not isinstance(obj, Adapter):
         raise TypeError(f"resolved object from {target!r} does not satisfy the Adapter protocol")
+
+    for method_name in _ASYNC_METHODS:
+        if not inspect.iscoroutinefunction(getattr(obj, method_name)):
+            raise TypeError(
+                f"adapter from {target!r}: {method_name!r} must be `async def` "
+                "(runtime_checkable Protocol only verifies method names, not async-ness)"
+            )
     return obj
 
 

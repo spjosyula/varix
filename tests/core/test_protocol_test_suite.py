@@ -21,6 +21,7 @@ from varix.core import (
 from varix.core.errors import AdapterError
 from varix.core.protocol_test_suite import (
     check_capabilities_idempotent,
+    check_methods_are_async,
     check_pipeline_structure_stable,
     check_replay_step_does_not_mutate_inputs,
     check_run_pipeline_aligns_with_structure,
@@ -131,6 +132,22 @@ async def test_misaligned_run_is_caught() -> None:
 async def test_mutating_replay_is_caught() -> None:
     with pytest.raises(AdapterError, match="mutated"):
         await check_replay_step_does_not_mutate_inputs(_MutatingReplay(), {"q": "hi"})
+
+
+def test_clean_adapter_passes_async_methods_check() -> None:
+    check_methods_are_async(_CleanAdapter())
+
+
+def test_sync_run_pipeline_method_is_caught() -> None:
+    class _SyncRun(_CleanAdapter):
+        def run_pipeline(  # type: ignore[override]
+            self, pipeline_input: Any, seed: int | None = None
+        ) -> PipelineRun:
+            now = _now()
+            return PipelineRun(run_id="r", step_runs=(), started_at=now, finished_at=now)
+
+    with pytest.raises(AdapterError, match=r"run_pipeline.*async def"):
+        check_methods_are_async(_SyncRun())
 
 
 @pytest.mark.asyncio
