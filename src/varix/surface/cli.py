@@ -7,7 +7,7 @@ import logging
 import typer
 
 from varix import __version__
-from varix.core import RefusalRequired
+from varix.core import RefusalRequired, StructuralMismatch
 from varix.surface.dispatch import execute_explain, execute_run, execute_show
 from varix.surface.reporter import render_analysis
 
@@ -82,6 +82,10 @@ def run_cmd(
             n=n,
             max_cost=max_cost,
         )
+    except (StructuralMismatch, RefusalRequired) as exc:
+        typer.echo("varix run: refusing to produce an analysis", err=True)
+        typer.echo(f"  {exc}", err=True)
+        raise typer.Exit(code=2) from exc
     except (FileNotFoundError, ImportError, AttributeError, TypeError) as exc:
         typer.echo(f"varix run: {exc}", err=True)
         raise typer.Exit(code=1) from exc

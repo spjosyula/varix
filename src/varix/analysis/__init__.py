@@ -5,7 +5,11 @@ Does not import adapters or any I/O layer.
 """
 
 from varix.analysis.localizer import Localizer
-from varix.analysis.orchestration import AnalysisResult, analyze
+from varix.analysis.orchestration import (
+    AnalysisResult,
+    analyze,
+    detect_structural_mismatch,
+)
 from varix.analysis.registry import Classifier, ClassifierRegistry
 
 __all__ = [
@@ -14,4 +18,5 @@ __all__ = [
     "ClassifierRegistry",
     "Localizer",
     "analyze",
+    "detect_structural_mismatch",
 ]

@@ -109,3 +109,23 @@ async def test_run_and_replay_counters_are_independent() -> None:
 async def test_pipeline_structure_returns_five_steps() -> None:
     graph = await FakeAdapter().pipeline_structure("anything")
     assert [s.id for s in graph.steps] == ["s1", "s2", "s3", "s4", "s5"]
+
+
+@pytest.mark.asyncio
+async def test_structure_variance_alternates_step_count_across_calls() -> None:
+    adapter = FakeAdapter(structure_variance=True)
+    a = await adapter.run_pipeline("hello")
+    b = await adapter.run_pipeline("hello")
+    c = await adapter.run_pipeline("hello")
+    # Odd calls produce the full five-step graph; even calls produce three.
+    assert [sr.step_id for sr in a.step_runs] == ["s1", "s2", "s3", "s4", "s5"]
+    assert [sr.step_id for sr in b.step_runs] == ["s1", "s2", "s3"]
+    assert [sr.step_id for sr in c.step_runs] == ["s1", "s2", "s3", "s4", "s5"]
+
+
+@pytest.mark.asyncio
+async def test_structure_variance_default_off_preserves_shape() -> None:
+    adapter = FakeAdapter()
+    for _ in range(3):
+        run = await adapter.run_pipeline("hello")
+        assert [sr.step_id for sr in run.step_runs] == ["s1", "s2", "s3", "s4", "s5"]

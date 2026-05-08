@@ -2,12 +2,33 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import pytest
 
 from varix.adapters import FakeAdapter
-from varix.analysis import AnalysisResult, analyze
-from varix.core import Classification, Confidence, LocalizationOutcome
+from varix.analysis import AnalysisResult, analyze, detect_structural_mismatch
+from varix.core import (
+    AdapterCapabilities,
+    Classification,
+    Confidence,
+    LocalizationOutcome,
+    PipelineRun,
+    StepRun,
+    StructuralMismatch,
+)
 from varix.execution import run_n
+
+_T = datetime(2026, 5, 8, 12, 0, 0, tzinfo=UTC)
+
+
+def _run(*step_ids: str) -> PipelineRun:
+    return PipelineRun(
+        run_id="r",
+        step_runs=tuple(StepRun(step_id=sid, inputs="i", output="o") for sid in step_ids),
+        started_at=_T,
+        finished_at=_T,
+    )
 
 
 @pytest.mark.asyncio
@@ -62,3 +83,45 @@ async def test_empty_runs_returns_empty_result() -> None:
     result = analyze([], adapter.capabilities())
     assert result.findings == ()
     assert result.outcomes == {}
+
+
+# --- structural mismatch detection ----------------------------------------
+
+
+def test_detect_structural_mismatch_no_op_for_empty_or_single_run() -> None:
+    detect_structural_mismatch([])
+    detect_structural_mismatch([_run("s1", "s2")])  # no AssertionError
+
+
+def test_detect_structural_mismatch_passes_consistent_runs() -> None:
+    detect_structural_mismatch([_run("s1", "s2"), _run("s1", "s2"), _run("s1", "s2")])
+
+
+def test_detect_structural_mismatch_raises_on_different_lengths() -> None:
+    with pytest.raises(StructuralMismatch, match="varied across runs"):
+        detect_structural_mismatch([_run("s1", "s2", "s3"), _run("s1", "s2")])
+
+
+def test_detect_structural_mismatch_raises_on_different_step_ids_same_position() -> None:
+    with pytest.raises(StructuralMismatch):
+        detect_structural_mismatch([_run("s1", "s2"), _run("s1", "sX")])
+
+
+def test_detect_structural_mismatch_finds_third_run_inconsistent() -> None:
+    with pytest.raises(StructuralMismatch, match="run 2"):
+        detect_structural_mismatch([_run("s1", "s2"), _run("s1", "s2"), _run("s1")])
+
+
+def test_analyze_propagates_structural_mismatch() -> None:
+    runs = [_run("s1", "s2", "s3"), _run("s1", "s2")]
+    with pytest.raises(StructuralMismatch):
+        analyze(runs, AdapterCapabilities())
+
+
+@pytest.mark.asyncio
+async def test_fake_adapter_structure_variance_triggers_refusal() -> None:
+    adapter = FakeAdapter(structure_variance=True)
+    runs = await run_n(adapter, "hello", n=3)
+    # Run 1: 5 steps, run 2: 3 steps, run 3: 5 steps → analyze refuses.
+    with pytest.raises(StructuralMismatch):
+        analyze(runs, adapter.capabilities())

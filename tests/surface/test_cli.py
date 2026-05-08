@@ -85,6 +85,25 @@ def test_run_resolution_failure_exits_one_with_message(
     assert list(tmp_path.glob("*.json")) == []
 
 
+def test_run_structure_variance_exits_two_with_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("VARIX_RUNS_DIR", str(tmp_path / "runs"))
+    agent = tmp_path / "agent.py"
+    agent.write_text(
+        "from varix.adapters import FakeAdapter\nadapter = FakeAdapter(structure_variance=True)\n",
+        encoding="utf-8",
+    )
+    result = runner.invoke(app, ["run", str(agent), "--input", "hello", "-n", "3"])
+    assert result.exit_code == 2
+    assert "refusing to produce an analysis" in result.output
+    assert "structure varied" in result.output
+    # No artifact written.
+    runs_dir = tmp_path / "runs"
+    if runs_dir.exists():
+        assert list(runs_dir.glob("*.json")) == []
+
+
 def test_show_renders_saved_analysis(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("VARIX_RUNS_DIR", str(tmp_path))
     # Save an artifact via run, then show it.

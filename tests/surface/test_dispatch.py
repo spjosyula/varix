@@ -113,6 +113,29 @@ def test_execute_run_resolution_failure_raises_before_save(tmp_path: Path) -> No
     assert list(tmp_path.glob("*.json")) == []
 
 
+def test_execute_run_structural_mismatch_writes_no_artifact(tmp_path: Path) -> None:
+    """An adapter that returns inconsistent step graphs produces a refusal."""
+    from varix.core import StructuralMismatch
+
+    agent = tmp_path / "agent.py"
+    agent.write_text(
+        "from varix.adapters import FakeAdapter\nadapter = FakeAdapter(structure_variance=True)\n",
+        encoding="utf-8",
+    )
+    runs_dir = tmp_path / "runs"
+    with pytest.raises(StructuralMismatch):
+        execute_run(
+            pipeline=str(agent),
+            input_text="hello",
+            n=3,
+            base_dir=runs_dir,
+            clock=FrozenClock(_FROZEN),
+            rng=SequenceRng(["id"]),
+        )
+    # Refusal is loud; nothing is persisted.
+    assert not runs_dir.exists() or list(runs_dir.glob("*.json")) == []
+
+
 def test_resolve_runs_dir_prefers_explicit_argument(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

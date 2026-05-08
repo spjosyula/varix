@@ -3,6 +3,11 @@
 Wires together the localizer and every shipped classifier. Returns both
 per-step outcomes and the collected findings — callers (the CLI, the
 reporter) typically need both.
+
+Acts as the gatekeeper for structural validity: if the N runs disagree on
+the step graph, it raises `StructuralMismatch` before any localization or
+classification happens. There is no honest analysis to produce when the
+runs aren't comparable.
 """
 
 from __future__ import annotations
@@ -26,6 +31,7 @@ from varix.core import (
     LocalizationOutcome,
     PipelineRun,
     StepRun,
+    StructuralMismatch,
     VarianceMetric,
 )
 
@@ -38,6 +44,24 @@ class AnalysisResult:
     findings: tuple[Finding, ...]
 
 
+def detect_structural_mismatch(runs: Sequence[PipelineRun]) -> None:
+    """Raise `StructuralMismatch` if `runs` disagree on the step-id sequence.
+
+    With fewer than two runs there is nothing to compare; this is a no-op.
+    """
+    if len(runs) < 2:
+        return
+    expected = tuple(sr.step_id for sr in runs[0].step_runs)
+    for index, run in enumerate(runs[1:], start=1):
+        actual = tuple(sr.step_id for sr in run.step_runs)
+        if actual != expected:
+            raise StructuralMismatch(
+                "pipeline structure varied across runs: "
+                f"run 0 has steps {list(expected)}, "
+                f"run {index} has steps {list(actual)}"
+            )
+
+
 def analyze(
     runs: Sequence[PipelineRun],
     capabilities: AdapterCapabilities,
@@ -45,7 +69,12 @@ def analyze(
     *,
     replays_by_step: Mapping[str, Sequence[StepRun]] | None = None,
 ) -> AnalysisResult:
-    """Localize each step and run every classifier; return the combined result."""
+    """Localize each step and run every classifier; return the combined result.
+
+    Raises `StructuralMismatch` when the N runs disagree on the step graph.
+    """
+    detect_structural_mismatch(runs)
+
     actual_metric = metric if metric is not None else ExactMatch()
     localizer = Localizer(metric=actual_metric)
     outcomes = localizer.classify_steps(runs)

@@ -160,3 +160,47 @@ def test_high_confidence_scenarios_each_emit_exactly_one_finding(
     )
     assert len(analysis.findings) == 1
     assert analysis.findings[0].confidence.value == "high"
+
+
+def test_render_includes_unavailable_findings() -> None:
+    """Regression: UNAVAILABLE findings (from missing capability) survive into the report."""
+    from varix.core import (
+        SCHEMA_VERSION,
+        Classification,
+        Confidence,
+        CostSnapshot,
+        Finding,
+        LocalizationOutcome,
+        PipelineAnalysis,
+        PipelineRun,
+        StepRun,
+    )
+    from varix.surface.reporter import render_analysis
+
+    step_run = StepRun(step_id="s1", inputs="i", output="o")
+    pipeline_run = PipelineRun(
+        run_id="r1", step_runs=(step_run,), started_at=_FROZEN, finished_at=_FROZEN
+    )
+    finding = Finding(
+        step_id="s1",
+        localization=LocalizationOutcome.SOURCE,
+        confidence=Confidence.UNAVAILABLE,
+        metric_name="exact",
+        classification=Classification.PROVIDER_SIDE,
+        reason="adapter does not expose system_fingerprint",
+    )
+    analysis = PipelineAnalysis(
+        analysis_id="unavailable-test",
+        pipeline_name="fake",
+        n=1,
+        metric_name="exact",
+        schema_version=SCHEMA_VERSION,
+        runs=(pipeline_run,),
+        findings=(finding,),
+        started_at=_FROZEN,
+        finished_at=_FROZEN,
+        total_cost=CostSnapshot(),
+    )
+    report = render_analysis(analysis)
+    assert "provider_side (unavailable):" in report
+    assert "adapter does not expose system_fingerprint" in report

@@ -33,10 +33,22 @@ _STABLE_TIME = datetime(2026, 5, 8, 12, 0, 0, tzinfo=UTC)
 
 
 class FakeAdapter:
-    """Five-step test pipeline. Pass `variance={step_id: Classification(...)}` to inject."""
+    """Five-step test pipeline. Pass `variance={step_id: Classification(...)}` to inject.
 
-    def __init__(self, *, variance: dict[str, Classification] | None = None) -> None:
+    Setting `structure_variance=True` makes `run_pipeline` return the full
+    five-step sequence on odd-numbered calls and a truncated three-step
+    sequence on even-numbered calls — used to exercise varix's
+    structural-mismatch refusal path.
+    """
+
+    def __init__(
+        self,
+        *,
+        variance: dict[str, Classification] | None = None,
+        structure_variance: bool = False,
+    ) -> None:
         self._variance: dict[str, Classification] = dict(variance) if variance else {}
+        self._structure_variance = structure_variance
         self._run_counter = 0
         self._replay_counter = 0
 
@@ -53,9 +65,10 @@ class FakeAdapter:
     async def run_pipeline(self, pipeline_input: Any, seed: int | None = None) -> PipelineRun:
         self._run_counter += 1
         n = self._run_counter
+        steps = self._steps_for_run(n)
         prev_output: Any = pipeline_input
         step_runs: list[StepRun] = []
-        for step in _STEPS:
+        for step in steps:
             sr = _build_step_run(step, prev_output, n, self._variance.get(step.id))
             step_runs.append(sr)
             prev_output = sr.output
@@ -65,6 +78,13 @@ class FakeAdapter:
             started_at=_STABLE_TIME,
             finished_at=_STABLE_TIME,
         )
+
+    def _steps_for_run(self, run_index: int) -> tuple[Step, ...]:
+        if not self._structure_variance:
+            return _STEPS
+        # Alternate between the full five-step graph and a truncated three-step
+        # graph so analyze() sees inconsistent step sequences across runs.
+        return _STEPS if run_index % 2 == 1 else _STEPS[:3]
 
     async def replay_step(
         self, step_id: str, fixed_inputs: Any, seed: int | None = None
