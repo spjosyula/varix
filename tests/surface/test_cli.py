@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,17 @@ from varix.surface.cli import app
 
 runner = CliRunner()
 
+# Typer renders help via Rich, which emits ANSI escape sequences and wraps to
+# the detected terminal width. Strip the escapes so substring assertions don't
+# trip over color codes; widen via the COLUMNS env var to prevent wrap-induced
+# line splits inside option columns.
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+_WIDE_HELP_ENV = {"COLUMNS": "200"}
+
+
+def _strip_ansi(s: str) -> str:
+    return _ANSI_RE.sub("", s)
+
 
 def test_version_flag_prints_version_and_exits_zero() -> None:
     result = runner.invoke(app, ["--version"])
@@ -22,12 +34,13 @@ def test_version_flag_prints_version_and_exits_zero() -> None:
 
 
 def test_help_works_at_top_level() -> None:
-    result = runner.invoke(app, ["--help"])
+    result = runner.invoke(app, ["--help"], env=_WIDE_HELP_ENV)
     assert result.exit_code == 0
-    assert "run" in result.output
-    assert "show" in result.output
-    assert "explain" in result.output
-    assert "impact" in result.output
+    output = _strip_ansi(result.output)
+    assert "run" in output
+    assert "show" in output
+    assert "explain" in output
+    assert "impact" in output
 
 
 def test_no_args_shows_help() -> None:
@@ -72,16 +85,58 @@ def test_run_resolution_failure_exits_one_with_message(
     assert list(tmp_path.glob("*.json")) == []
 
 
-def test_show_stub_exits_non_zero_with_message() -> None:
-    result = runner.invoke(app, ["show", "abc-123"])
+def test_show_renders_saved_analysis(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("VARIX_RUNS_DIR", str(tmp_path))
+    # Save an artifact via run, then show it.
+    runner.invoke(app, ["run", "varix.adapters:FakeAdapter", "--input", "hello", "-n", "2"])
+    artifact = next(tmp_path.glob("*.json"))
+    result = runner.invoke(app, ["show", artifact.stem])
+    assert result.exit_code == 0
+    assert "=== varix analysis ===" in result.output
+    assert "step s1: deterministic" in result.output
+
+
+def test_show_unknown_id_exits_one(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("VARIX_RUNS_DIR", str(tmp_path))
+    result = runner.invoke(app, ["show", "does-not-exist"])
     assert result.exit_code == 1
-    assert "not yet implemented" in result.output
+    assert "varix show:" in result.output
 
 
-def test_explain_stub_exits_non_zero_with_message() -> None:
+def test_explain_renders_evidence_for_step(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("VARIX_RUNS_DIR", str(tmp_path))
+    agent = tmp_path / "agent.py"
+    agent.write_text(
+        "from varix.adapters import FakeAdapter\n"
+        "from varix.core import Classification\n"
+        "adapter = FakeAdapter(variance={'s2': Classification.PROVIDER_SIDE})\n",
+        encoding="utf-8",
+    )
+    runner.invoke(app, ["run", str(agent), "--input", "hello", "-n", "3"])
+    result = runner.invoke(app, ["explain", "s2"])
+    assert result.exit_code == 0
+    assert "=== explain s2 ===" in result.output
+    assert "provider_side (high)" in result.output
+    assert "evidence:" in result.output
+    assert "fingerprint_diff" in result.output
+
+
+def test_explain_unknown_step_exits_one(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("VARIX_RUNS_DIR", str(tmp_path))
+    runner.invoke(app, ["run", "varix.adapters:FakeAdapter", "--input", "hello"])
+    result = runner.invoke(app, ["explain", "no_such_step"])
+    assert result.exit_code == 1
+    assert "varix explain:" in result.output
+    assert "no_such_step" in result.output
+
+
+def test_explain_with_no_saved_analyses_exits_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("VARIX_RUNS_DIR", str(tmp_path))  # empty dir
     result = runner.invoke(app, ["explain", "s1"])
     assert result.exit_code == 1
-    assert "not yet implemented" in result.output
+    assert "varix explain:" in result.output
 
 
 def test_impact_stub_exits_non_zero_with_message() -> None:
@@ -91,11 +146,12 @@ def test_impact_stub_exits_non_zero_with_message() -> None:
 
 
 def test_run_help_lists_planned_options() -> None:
-    result = runner.invoke(app, ["run", "--help"])
+    result = runner.invoke(app, ["run", "--help"], env=_WIDE_HELP_ENV)
     assert result.exit_code == 0
-    assert "--n" in result.output
-    assert "--input" in result.output
-    assert "--max-cost" in result.output
+    output = _strip_ansi(result.output)
+    assert "--n" in output
+    assert "--input" in output
+    assert "--max-cost" in output
 
 
 def test_verbose_flag_sets_debug_level_on_varix_logger(

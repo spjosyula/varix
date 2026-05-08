@@ -7,7 +7,8 @@ import logging
 import typer
 
 from varix import __version__
-from varix.surface.dispatch import execute_run
+from varix.core import RefusalRequired
+from varix.surface.dispatch import execute_explain, execute_run, execute_show
 from varix.surface.reporter import render_analysis
 
 app = typer.Typer(
@@ -98,8 +99,15 @@ def show_cmd(
     ),
 ) -> None:
     """Render a saved analysis to the terminal."""
-    _ = analysis_id
-    _not_yet("show")
+    try:
+        rendered = execute_show(analysis_id)
+    except RefusalRequired as exc:
+        typer.echo(f"varix show: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    except (FileNotFoundError, OSError) as exc:
+        typer.echo(f"varix show: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(rendered)
 
 
 @app.command("explain")
@@ -111,12 +119,19 @@ def explain_cmd(
     analysis_id: str | None = typer.Option(
         None,
         "--analysis",
-        help="Analysis ID. Defaults to the most recent.",
+        help="Analysis ID or path. Defaults to the most recent saved artifact.",
     ),
 ) -> None:
     """Print the evidence trail behind a finding for a single step."""
-    _ = step_id, analysis_id
-    _not_yet("explain")
+    try:
+        rendered = execute_explain(step_id, analysis_id)
+    except RefusalRequired as exc:
+        typer.echo(f"varix explain: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    except (FileNotFoundError, OSError, ValueError) as exc:
+        typer.echo(f"varix explain: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(rendered)
 
 
 @app.command("impact")

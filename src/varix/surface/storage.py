@@ -69,6 +69,14 @@ def list_analyses(base_dir: Path | None = None) -> list[Path]:
     return sorted(target_dir.glob("*.json"))
 
 
+def latest_analysis(base_dir: Path | None = None) -> Path | None:
+    """Return the most recently modified artifact in `base_dir`, or None if empty."""
+    paths = list_analyses(base_dir)
+    if not paths:
+        return None
+    return max(paths, key=lambda p: p.stat().st_mtime)
+
+
 def _resolve_dir(base_dir: Path | None) -> Path:
     return Path(base_dir).expanduser() if base_dir is not None else default_runs_dir()
 

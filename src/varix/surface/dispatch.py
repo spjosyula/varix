@@ -24,7 +24,8 @@ from varix.core import (
 )
 from varix.execution import CostAccumulator, run_n
 from varix.surface.loader import load_adapter
-from varix.surface.storage import save
+from varix.surface.reporter import render_analysis, render_explain
+from varix.surface.storage import latest_analysis, load, load_path, save
 
 _RUNS_DIR_ENV = "VARIX_RUNS_DIR"
 
@@ -92,3 +93,44 @@ def resolve_runs_dir(explicit: Path | None) -> Path | None:
         return explicit
     env = os.environ.get(_RUNS_DIR_ENV)
     return Path(env).expanduser() if env else None
+
+
+def execute_show(target: str, *, base_dir: Path | None = None) -> str:
+    """Load an artifact (by ID or path) and return the rendered analysis text."""
+    analysis = _load_target(target, base_dir)
+    return render_analysis(analysis)
+
+
+def execute_explain(
+    step_id: str,
+    analysis_target: str | None = None,
+    *,
+    base_dir: Path | None = None,
+) -> str:
+    """Load an artifact and render the evidence trail for `step_id`.
+
+    When `analysis_target` is None, the most recently modified artifact is used.
+    Raises `FileNotFoundError` if no artifact can be located, or `ValueError`
+    if `step_id` is not present in the chosen artifact.
+    """
+    if analysis_target is not None:
+        analysis = _load_target(analysis_target, base_dir)
+    else:
+        resolved_dir = resolve_runs_dir(base_dir)
+        latest = latest_analysis(resolved_dir)
+        if latest is None:
+            raise FileNotFoundError("no saved analyses found")
+        analysis = load_path(latest)
+
+    step_ids = {sr.step_id for run in analysis.runs for sr in run.step_runs}
+    if step_id not in step_ids:
+        raise ValueError(f"step {step_id!r} not found in analysis {analysis.analysis_id!r}")
+    return render_explain(analysis, step_id)
+
+
+def _load_target(target: str, base_dir: Path | None) -> PipelineAnalysis:
+    """Load an artifact by ID or by path, depending on the target's shape."""
+    if target.endswith(".json") or "/" in target or os.sep in target:
+        return load_path(Path(target).expanduser())
+    resolved_dir = resolve_runs_dir(base_dir)
+    return load(target, base_dir=resolved_dir)

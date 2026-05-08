@@ -5,6 +5,8 @@ from __future__ import annotations
 from varix.analysis import Localizer
 from varix.core import ExactMatch, Finding, LocalizationOutcome, PipelineAnalysis
 
+__all__ = ["render_analysis", "render_explain"]
+
 
 def render_analysis(analysis: PipelineAnalysis) -> str:
     """Return a plain-text report for `analysis`. ASCII-only, no trailing newline."""
@@ -40,3 +42,39 @@ def render_analysis(analysis: PipelineAnalysis) -> str:
     lines.append(f"{n_findings} finding(s), {n_sources} source step(s)")
 
     return "\n".join(lines)
+
+
+def render_explain(analysis: PipelineAnalysis, step_id: str) -> str:
+    """Render the evidence trail for `step_id`'s findings from `analysis`.
+
+    Uses only `analysis.findings` and their `Evidence` records — no Localizer,
+    no classifier, no re-run. The artifact is the source of truth.
+    """
+    lines: list[str] = []
+    lines.append(f"=== explain {step_id} ===")
+    lines.append(f"analysis_id: {analysis.analysis_id}")
+    lines.append(f"pipeline:    {analysis.pipeline_name}")
+    lines.append("")
+
+    step_findings = [f for f in analysis.findings if f.step_id == step_id]
+    if not step_findings:
+        lines.append(f"{step_id} has no findings.")
+        return "\n".join(lines)
+
+    lines.append(f"{step_id} has {len(step_findings)} finding(s):")
+    lines.append("")
+
+    for f in step_findings:
+        cat = f.classification.value if f.classification is not None else "unknown"
+        lines.append(f"{cat} ({f.confidence.value})")
+        if f.reason:
+            lines.append(f"  reason: {f.reason}")
+        if f.evidence:
+            lines.append("  evidence:")
+            for ev in f.evidence:
+                lines.append(f"    [{ev.kind}] {ev.description}")
+                for k, v in ev.data.items():
+                    lines.append(f"      {k}: {v}")
+        lines.append("")
+
+    return "\n".join(lines).rstrip()
