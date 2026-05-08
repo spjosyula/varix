@@ -26,6 +26,9 @@ dependencies = [
     "typer>=0.12",
 ]
 
+[project.scripts]
+varix = "varix.surface.cli:app"
+
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
