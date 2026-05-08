@@ -40,5 +40,8 @@ jobs:
       - name: Format check
         run: ruff format --check .
 
+      - name: Type check
+        run: mypy
+
       - name: Test
         run: pytest
