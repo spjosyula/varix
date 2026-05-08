@@ -5,6 +5,11 @@ Every error varix raises is a subclass of `VarixError`.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from varix.core.types import PipelineRun
+
 
 class VarixError(Exception):
     """Base class for every error varix raises."""
@@ -19,7 +24,20 @@ class CapabilityMissing(VarixError):
 
 
 class BudgetExceeded(VarixError):
-    """The cost budget (`--max-cost`) was reached."""
+    """The cost budget (`--max-cost`) was reached.
+
+    `partial_runs` carries every run that completed before the limit, so the
+    caller can still write a (partial) artifact.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        partial_runs: tuple[PipelineRun, ...] = (),
+    ) -> None:
+        super().__init__(message)
+        self.partial_runs = partial_runs
 
 
 class StructuralMismatch(VarixError):
