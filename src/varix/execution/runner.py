@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from varix.core import Adapter, BudgetExceeded, CostSnapshot, PipelineRun
+from varix.core import Adapter, BudgetExceeded, CostSnapshot, PipelineRun, RunFailed, VarixError
 
 
 class CostAccumulator:
@@ -33,12 +33,26 @@ async def run_n(
     If `max_cost` is given, raises `BudgetExceeded` after the first run that
     pushes accumulated dollars over the budget; the exception's `partial_runs`
     contains every run that completed first.
+
+    If the adapter raises any non-`VarixError` exception during a run, the
+    failure is wrapped in `RunFailed` carrying every run that completed
+    cleanly before the failure. The original exception is chained via
+    `__cause__`. Varix-typed errors (e.g. `BudgetExceeded`, `AdapterError`)
+    pass through unchanged.
     """
     if max_cost is not None and cost is None:
         cost = CostAccumulator()
     runs: list[PipelineRun] = []
-    for _ in range(n):
-        run = await adapter.run_pipeline(pipeline_input)
+    for i in range(n):
+        try:
+            run = await adapter.run_pipeline(pipeline_input)
+        except VarixError:
+            raise
+        except Exception as exc:
+            raise RunFailed(
+                f"run {i + 1} of {n} failed: {type(exc).__name__}: {exc}",
+                partial_runs=tuple(runs),
+            ) from exc
         runs.append(run)
         if cost is not None:
             cost.add(run.cost)

@@ -40,6 +40,24 @@ class BudgetExceeded(VarixError):
         self.partial_runs = partial_runs
 
 
+class RunFailed(VarixError):
+    """The run loop was interrupted by an adapter exception.
+
+    `partial_runs` carries every run that completed cleanly before the
+    failure. The original cause is chained via `raise ... from exc` and
+    accessible through `__cause__`.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        partial_runs: tuple[PipelineRun, ...] = (),
+    ) -> None:
+        super().__init__(message)
+        self.partial_runs = partial_runs
+
+
 class StructuralMismatch(VarixError):
     """Pipeline runs produced different step graphs and cannot be aligned."""
 

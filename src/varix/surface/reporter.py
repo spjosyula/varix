@@ -19,6 +19,12 @@ def render_analysis(analysis: PipelineAnalysis) -> str:
     lines.append(f"cost:        ${analysis.total_cost.dollars:.4f}")
     lines.append("")
 
+    if analysis.notes:
+        lines.append("WARNING:")
+        for note in analysis.notes:
+            lines.append(f"  {note}")
+        lines.append("")
+
     outcomes = Localizer(metric=ExactMatch()).classify_steps(analysis.runs)
 
     findings_by_step: dict[str, list[Finding]] = {}

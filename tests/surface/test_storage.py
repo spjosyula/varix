@@ -193,3 +193,34 @@ def test_default_runs_dir_resolves_under_user_home() -> None:
     path = default_runs_dir()
     assert path.is_absolute()
     assert path.parts[-2:] == (".varix", "runs")
+
+
+def test_round_trip_preserves_notes(tmp_path: Path) -> None:
+    base = _make_analysis()
+    analysis = PipelineAnalysis(
+        analysis_id=base.analysis_id,
+        pipeline_name=base.pipeline_name,
+        n=base.n,
+        metric_name=base.metric_name,
+        schema_version=base.schema_version,
+        runs=base.runs,
+        findings=base.findings,
+        started_at=base.started_at,
+        finished_at=base.finished_at,
+        total_cost=base.total_cost,
+        step_replays=base.step_replays,
+        notes=("run 3 of 5 failed: RuntimeError: timeout",),
+    )
+    save(analysis, base_dir=tmp_path)
+    loaded = load(analysis.analysis_id, base_dir=tmp_path)
+    assert loaded.notes == ("run 3 of 5 failed: RuntimeError: timeout",)
+
+
+def test_load_old_artifact_without_notes_field(tmp_path: Path) -> None:
+    """Artifacts written before the notes field existed must still load."""
+    path = tmp_path / "old.json"
+    data = _make_analysis().to_dict()
+    del data["notes"]  # simulate a pre-notes artifact
+    path.write_text(json.dumps(data), encoding="utf-8")
+    loaded = load_path(path)
+    assert loaded.notes == ()

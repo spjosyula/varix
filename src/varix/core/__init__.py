@@ -11,6 +11,7 @@ from varix.core.errors import (
     BudgetExceeded,
     CapabilityMissing,
     RefusalRequired,
+    RunFailed,
     StructuralMismatch,
     VarixError,
 )
@@ -53,6 +54,7 @@ __all__ = [
     "PipelineRun",
     "RefusalRequired",
     "Rng",
+    "RunFailed",
     "SequenceRng",
     "Step",
     "StepGraph",

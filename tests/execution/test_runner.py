@@ -11,10 +11,12 @@ from varix.adapters import FakeAdapter
 from varix.core import (
     Adapter,
     AdapterCapabilities,
+    AdapterError,
     BudgetExceeded,
     Classification,
     CostSnapshot,
     PipelineRun,
+    RunFailed,
     StepGraph,
     StepRun,
 )
@@ -158,3 +160,64 @@ async def test_budget_uses_caller_accumulator_when_provided() -> None:
         await run_n(adapter, "x", n=10, max_cost=1.0, cost=cost)
     # Caller's accumulator reflects spend up to (and including) the run that tripped.
     assert cost.snapshot().dollars > 1.0
+
+
+class _FailingAdapter:
+    """Test adapter that succeeds for `succeed_for` runs then raises."""
+
+    def __init__(self, succeed_for: int, exc: BaseException) -> None:
+        self._succeed_for = succeed_for
+        self._exc = exc
+        self._calls = 0
+
+    def capabilities(self) -> AdapterCapabilities:
+        return AdapterCapabilities()
+
+    async def pipeline_structure(self, pipeline_input: Any) -> StepGraph:
+        return StepGraph(steps=())
+
+    async def run_pipeline(self, pipeline_input: Any, seed: int | None = None) -> PipelineRun:
+        self._calls += 1
+        if self._calls > self._succeed_for:
+            raise self._exc
+        return PipelineRun(run_id=f"r{self._calls}", step_runs=(), started_at=_T, finished_at=_T)
+
+    async def replay_step(
+        self, step_id: str, fixed_inputs: Any, seed: int | None = None
+    ) -> StepRun:
+        raise NotImplementedError
+
+
+@pytest.mark.asyncio
+async def test_run_n_wraps_adapter_exception_in_run_failed() -> None:
+    adapter: Adapter = _FailingAdapter(succeed_for=2, exc=RuntimeError("provider stalled"))
+    with pytest.raises(RunFailed) as ei:
+        await run_n(adapter, "x", n=5)
+    assert "run 3 of 5" in str(ei.value)
+    assert "RuntimeError" in str(ei.value)
+    assert "provider stalled" in str(ei.value)
+
+
+@pytest.mark.asyncio
+async def test_run_failed_carries_partial_runs_completed_before_failure() -> None:
+    adapter: Adapter = _FailingAdapter(succeed_for=3, exc=RuntimeError("network blip"))
+    with pytest.raises(RunFailed) as ei:
+        await run_n(adapter, "x", n=10)
+    assert len(ei.value.partial_runs) == 3
+
+
+@pytest.mark.asyncio
+async def test_run_failed_chains_original_cause() -> None:
+    original = RuntimeError("network blip")
+    adapter: Adapter = _FailingAdapter(succeed_for=0, exc=original)
+    with pytest.raises(RunFailed) as ei:
+        await run_n(adapter, "x", n=2)
+    assert ei.value.__cause__ is original
+
+
+@pytest.mark.asyncio
+async def test_run_n_passes_through_varix_errors_unchanged() -> None:
+    """`AdapterError` from the adapter is varix-typed; it should not be re-wrapped."""
+    adapter: Adapter = _FailingAdapter(succeed_for=1, exc=AdapterError("malformed result"))
+    with pytest.raises(AdapterError):
+        await run_n(adapter, "x", n=3)

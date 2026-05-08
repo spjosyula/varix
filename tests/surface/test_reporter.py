@@ -162,6 +162,73 @@ def test_high_confidence_scenarios_each_emit_exactly_one_finding(
     assert analysis.findings[0].confidence.value == "high"
 
 
+def test_render_emits_warning_banner_when_notes_present() -> None:
+    """Truncation notes must be loud at the top of the report, not buried."""
+    from varix.core import (
+        SCHEMA_VERSION,
+        CostSnapshot,
+        PipelineAnalysis,
+        PipelineRun,
+        StepRun,
+    )
+    from varix.surface.reporter import render_analysis
+
+    step_run = StepRun(step_id="s1", inputs="i", output="o")
+    pipeline_run = PipelineRun(
+        run_id="r1", step_runs=(step_run,), started_at=_FROZEN, finished_at=_FROZEN
+    )
+    analysis = PipelineAnalysis(
+        analysis_id="notes-test",
+        pipeline_name="fake",
+        n=1,
+        metric_name="exact",
+        schema_version=SCHEMA_VERSION,
+        runs=(pipeline_run,),
+        findings=(),
+        started_at=_FROZEN,
+        finished_at=_FROZEN,
+        total_cost=CostSnapshot(),
+        notes=("run 3 of 5 failed: RuntimeError: provider stalled",),
+    )
+    report = render_analysis(analysis)
+    assert "WARNING:" in report
+    assert "provider stalled" in report
+    # Banner sits between the header block and the per-step lines.
+    warn_at = report.index("WARNING:")
+    step_at = report.index("step s1:")
+    assert warn_at < step_at
+
+
+def test_render_clean_analysis_has_no_warning_section() -> None:
+    """Empty notes must not introduce a phantom WARNING banner."""
+    from varix.core import (
+        SCHEMA_VERSION,
+        CostSnapshot,
+        PipelineAnalysis,
+        PipelineRun,
+        StepRun,
+    )
+    from varix.surface.reporter import render_analysis
+
+    step_run = StepRun(step_id="s1", inputs="i", output="o")
+    pipeline_run = PipelineRun(
+        run_id="r1", step_runs=(step_run,), started_at=_FROZEN, finished_at=_FROZEN
+    )
+    analysis = PipelineAnalysis(
+        analysis_id="clean-test",
+        pipeline_name="fake",
+        n=1,
+        metric_name="exact",
+        schema_version=SCHEMA_VERSION,
+        runs=(pipeline_run,),
+        findings=(),
+        started_at=_FROZEN,
+        finished_at=_FROZEN,
+        total_cost=CostSnapshot(),
+    )
+    assert "WARNING" not in render_analysis(analysis)
+
+
 def test_render_includes_unavailable_findings() -> None:
     """Regression: UNAVAILABLE findings (from missing capability) survive into the report."""
     from varix.core import (

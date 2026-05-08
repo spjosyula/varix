@@ -316,6 +316,7 @@ class PipelineAnalysis:
     finished_at: datetime
     total_cost: CostSnapshot = field(default_factory=CostSnapshot)
     step_replays: dict[str, tuple[StepRun, ...]] = field(default_factory=dict)
+    notes: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -333,6 +334,7 @@ class PipelineAnalysis:
                 step_id: [sr.to_dict() for sr in replays]
                 for step_id, replays in self.step_replays.items()
             },
+            "notes": list(self.notes),
         }
 
     @classmethod
@@ -352,4 +354,5 @@ class PipelineAnalysis:
                 step_id: tuple(StepRun.from_dict(sr) for sr in replays)
                 for step_id, replays in data.get("step_replays", {}).items()
             },
+            notes=tuple(str(note) for note in data.get("notes", [])),
         )

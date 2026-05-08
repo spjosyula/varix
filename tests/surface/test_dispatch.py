@@ -156,3 +156,67 @@ def test_resolve_runs_dir_returns_none_when_unset(
 ) -> None:
     monkeypatch.delenv("VARIX_RUNS_DIR", raising=False)
     assert resolve_runs_dir(None) is None
+
+
+def test_execute_run_saves_partial_artifact_when_adapter_fails(tmp_path: Path) -> None:
+    """A run-loop interrupted by an adapter exception still produces a saved artifact.
+
+    The completed runs become the analysis input; the truncation reason is
+    recorded in `analysis.notes`. This is the explicit anti-silent-failure
+    contract: cost is never silently discarded.
+    """
+    agent = tmp_path / "agent.py"
+    agent.write_text(
+        "from typing import Any\n"
+        "from datetime import UTC, datetime\n"
+        "from varix.core import (\n"
+        "    AdapterCapabilities, PipelineRun, StepGraph, StepRun,\n"
+        ")\n"
+        "_T = datetime(2026, 5, 8, 12, 0, 0, tzinfo=UTC)\n"
+        "\n"
+        "class _Flaky:\n"
+        "    def __init__(self) -> None: self._calls = 0\n"
+        "    def capabilities(self) -> AdapterCapabilities:\n"
+        "        return AdapterCapabilities()\n"
+        "    async def pipeline_structure(self, pi: Any) -> StepGraph:\n"
+        "        return StepGraph(steps=())\n"
+        "    async def run_pipeline(self, pi: Any, seed: int | None = None) -> PipelineRun:\n"
+        "        self._calls += 1\n"
+        "        if self._calls > 2: raise RuntimeError('provider stalled')\n"
+        "        return PipelineRun(run_id=f'r{self._calls}', step_runs=(),\n"
+        "            started_at=_T, finished_at=_T)\n"
+        "    async def replay_step(self, sid: str, fi: Any,\n"
+        "        seed: int | None = None) -> StepRun:\n"
+        "        raise NotImplementedError\n"
+        "\n"
+        "adapter = _Flaky()\n",
+        encoding="utf-8",
+    )
+    runs_dir = tmp_path / "runs"
+    analysis, path = execute_run(
+        pipeline=str(agent),
+        input_text="hello",
+        n=5,
+        base_dir=runs_dir,
+        clock=FrozenClock(_FROZEN),
+        rng=SequenceRng(["partial-id"]),
+    )
+    assert path.exists()
+    assert analysis.n == 2  # only the runs that completed
+    assert len(analysis.notes) == 1
+    note = analysis.notes[0]
+    assert "RuntimeError" in note
+    assert "provider stalled" in note
+    assert "run 3 of 5" in note
+
+
+def test_execute_run_clean_run_records_no_notes(tmp_path: Path) -> None:
+    analysis, _ = execute_run(
+        pipeline="varix.adapters:FakeAdapter",
+        input_text="hello",
+        n=2,
+        base_dir=tmp_path,
+        clock=FrozenClock(_FROZEN),
+        rng=SequenceRng(["id"]),
+    )
+    assert analysis.notes == ()

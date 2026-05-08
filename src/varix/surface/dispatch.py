@@ -19,6 +19,7 @@ from varix.core import (
     ExactMatch,
     PipelineAnalysis,
     Rng,
+    RunFailed,
     SystemClock,
     SystemRng,
 )
@@ -40,16 +41,12 @@ def execute_run(
     clock: Clock | None = None,
     rng: Rng | None = None,
 ) -> tuple[PipelineAnalysis, Path]:
-    """Run `pipeline` `n` times, persist a stub analysis, and return both.
-
-    `findings` on the returned analysis is empty for now — real analysis is
-    wired in a later commit. The artifact is fully schema-valid and round-trips
-    through `varix.surface.load`.
+    """Run `pipeline` `n` times, analyze, persist, and return both.
 
     Raises `FileNotFoundError`, `ImportError`, `AttributeError`, or `TypeError`
-    when the pipeline target cannot be resolved. `BudgetExceeded` is caught:
-    the partial runs that completed are written to disk and the function
-    returns normally.
+    when the pipeline target cannot be resolved. `BudgetExceeded` and
+    `RunFailed` are caught: the partial runs that completed are saved with
+    a note describing the truncation, and the function returns normally.
     """
     actual_clock = clock if clock is not None else SystemClock()
     actual_rng = rng if rng is not None else SystemRng()
@@ -58,10 +55,15 @@ def execute_run(
     cost = CostAccumulator()
     started = actual_clock.now()
 
+    notes: list[str] = []
     try:
         runs = asyncio.run(run_n(adapter, input_text, n, cost=cost, max_cost=max_cost))
     except BudgetExceeded as exc:
         runs = list(exc.partial_runs)
+        notes.append(str(exc))
+    except RunFailed as exc:
+        runs = list(exc.partial_runs)
+        notes.append(str(exc))
 
     finished = actual_clock.now()
 
@@ -80,6 +82,7 @@ def execute_run(
         finished_at=finished,
         total_cost=cost.snapshot(),
         step_replays={},
+        notes=tuple(notes),
     )
 
     resolved_dir = resolve_runs_dir(base_dir)
