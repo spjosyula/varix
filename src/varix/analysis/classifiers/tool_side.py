@@ -7,6 +7,7 @@ from collections.abc import Sequence
 from varix.core import (
     AdapterCapabilities,
     Finding,
+    LocalizationOutcome,
     PipelineRun,
     StepRun,
     VarianceMetric,
@@ -22,6 +23,7 @@ class ToolSideClassifier:
     def classify(
         self,
         step_id: str,
+        localization: LocalizationOutcome,
         runs: Sequence[PipelineRun],
         replays: Sequence[StepRun],
         capabilities: AdapterCapabilities,

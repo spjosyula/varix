@@ -1,4 +1,10 @@
-"""Provider-side classifier — detects variance arising from the model provider."""
+"""Provider-side classifier — detects variance arising from the model provider.
+
+Diffs `system_fingerprint` across the runs (and replays, when available) for
+the step under analysis. Emits HIGH when fingerprints differ, UNAVAILABLE when
+the adapter does not expose fingerprint data and there is observable variance
+to explain, and abstains otherwise.
+"""
 
 from __future__ import annotations
 
@@ -6,15 +12,22 @@ from collections.abc import Sequence
 
 from varix.core import (
     AdapterCapabilities,
+    Classification,
+    Confidence,
+    Evidence,
     Finding,
+    LocalizationOutcome,
     PipelineRun,
     StepRun,
     VarianceMetric,
+    unavailable_finding,
 )
+
+_FINGERPRINT_KEY = "system_fingerprint"
 
 
 class ProviderSideClassifier:
-    """Diff `system_fingerprint` (and similar provider metadata) across replays."""
+    """Diff `system_fingerprint` (and similar provider metadata) across runs."""
 
     def name(self) -> str:
         return "provider_side"
@@ -22,9 +35,72 @@ class ProviderSideClassifier:
     def classify(
         self,
         step_id: str,
+        localization: LocalizationOutcome,
         runs: Sequence[PipelineRun],
         replays: Sequence[StepRun],
         capabilities: AdapterCapabilities,
         metric: VarianceMetric,
     ) -> list[Finding]:
-        return []
+        observations = _gather_step_runs(step_id, runs, replays)
+        if len(observations) < 2:
+            return []
+
+        if not capabilities.exposes_fingerprint:
+            if not _outputs_differ(observations, metric):
+                return []
+            return [
+                unavailable_finding(
+                    step_id=step_id,
+                    metric_name=metric.name(),
+                    reason="adapter does not expose system_fingerprint",
+                    classification=Classification.PROVIDER_SIDE,
+                    localization=localization,
+                )
+            ]
+
+        fingerprints = [(sr.provider_metadata or {}).get(_FINGERPRINT_KEY) for sr in observations]
+        present = [fp for fp in fingerprints if fp is not None]
+        if len(present) < 2:
+            return []
+
+        unique = sorted({str(fp) for fp in present})
+        if len(unique) <= 1:
+            return []
+
+        return [
+            Finding(
+                step_id=step_id,
+                localization=localization,
+                confidence=Confidence.HIGH,
+                metric_name=metric.name(),
+                classification=Classification.PROVIDER_SIDE,
+                reason=f"system_fingerprint varied across runs: {unique}",
+                evidence=(
+                    Evidence(
+                        kind="fingerprint_diff",
+                        description="system_fingerprint values observed across runs",
+                        data={"fingerprints": [str(fp) for fp in present], "unique": unique},
+                    ),
+                ),
+            )
+        ]
+
+
+def _gather_step_runs(
+    step_id: str,
+    runs: Sequence[PipelineRun],
+    replays: Sequence[StepRun],
+) -> list[StepRun]:
+    out: list[StepRun] = []
+    for run in runs:
+        for sr in run.step_runs:
+            if sr.step_id == step_id:
+                out.append(sr)
+                break
+    out.extend(sr for sr in replays if sr.step_id == step_id)
+    return out
+
+
+def _outputs_differ(observations: Sequence[StepRun], metric: VarianceMetric) -> bool:
+    first = observations[0].output
+    return any(not metric.equivalent(first, sr.output) for sr in observations[1:])

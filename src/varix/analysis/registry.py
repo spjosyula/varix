@@ -14,6 +14,7 @@ from typing import Protocol, runtime_checkable
 from varix.core import (
     AdapterCapabilities,
     Finding,
+    LocalizationOutcome,
     PipelineRun,
     StepRun,
     VarianceMetric,
@@ -24,8 +25,9 @@ from varix.core import (
 class Classifier(Protocol):
     """A single-category classifier.
 
-    Returns a list of findings (often zero or one). Multiple findings allow
-    a classifier to emit both a residual verdict and a heuristic note.
+    Receives the localizer's verdict so emitted findings carry the correct
+    `localization`. The classifier itself decides — based on its own domain
+    evidence — whether to fire; localization is not a gate.
     """
 
     def name(self) -> str: ...
@@ -33,6 +35,7 @@ class Classifier(Protocol):
     def classify(
         self,
         step_id: str,
+        localization: LocalizationOutcome,
         runs: Sequence[PipelineRun],
         replays: Sequence[StepRun],
         capabilities: AdapterCapabilities,
@@ -56,6 +59,7 @@ class ClassifierRegistry:
     def classify_step(
         self,
         step_id: str,
+        localization: LocalizationOutcome,
         runs: Sequence[PipelineRun],
         replays: Sequence[StepRun],
         capabilities: AdapterCapabilities,
@@ -63,5 +67,7 @@ class ClassifierRegistry:
     ) -> list[Finding]:
         findings: list[Finding] = []
         for classifier in self._classifiers:
-            findings.extend(classifier.classify(step_id, runs, replays, capabilities, metric))
+            findings.extend(
+                classifier.classify(step_id, localization, runs, replays, capabilities, metric)
+            )
         return findings

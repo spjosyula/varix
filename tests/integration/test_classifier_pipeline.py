@@ -1,8 +1,7 @@
 """Integration test for the analysis pipeline.
 
-Wires FakeAdapter → run_n → Localizer → ClassifierRegistry. Initially asserts
-only that the wiring runs without crashing. Subsequent commits add per-classifier
-assertions as each scaffold is filled in.
+Wires FakeAdapter → run_n → Localizer → ClassifierRegistry. Per-classifier
+assertions accumulate as each scaffold is filled in.
 """
 
 from __future__ import annotations
@@ -18,7 +17,7 @@ from varix.analysis.classifiers import (
     TimeOrStateClassifier,
     ToolSideClassifier,
 )
-from varix.core import ExactMatch
+from varix.core import Classification, Confidence, ExactMatch
 from varix.execution import run_n
 
 
@@ -35,7 +34,7 @@ def _all_classifiers() -> ClassifierRegistry:
 
 
 @pytest.mark.asyncio
-async def test_full_analysis_pipeline_runs_against_fake_adapter() -> None:
+async def test_deterministic_pipeline_emits_no_findings() -> None:
     adapter = FakeAdapter()
     runs = await run_n(adapter, "hello", n=3)
     metric = ExactMatch()
@@ -45,13 +44,48 @@ async def test_full_analysis_pipeline_runs_against_fake_adapter() -> None:
 
     registry = _all_classifiers()
     capabilities = adapter.capabilities()
-    for step_id in outcomes:
+    for step_id, localization in outcomes.items():
         findings = registry.classify_step(
             step_id=step_id,
+            localization=localization,
             runs=runs,
             replays=[],
             capabilities=capabilities,
             metric=metric,
         )
-        # Scaffolds abstain.
         assert findings == []
+
+
+@pytest.mark.asyncio
+async def test_provider_side_variance_at_s2_produces_high_finding() -> None:
+    adapter = FakeAdapter(variance={"s2": Classification.PROVIDER_SIDE})
+    runs = await run_n(adapter, "hello", n=3)
+    metric = ExactMatch()
+
+    outcomes = Localizer(metric=metric).classify_steps(runs)
+    registry = _all_classifiers()
+    capabilities = adapter.capabilities()
+
+    findings_by_step = {
+        step_id: registry.classify_step(
+            step_id=step_id,
+            localization=localization,
+            runs=runs,
+            replays=[],
+            capabilities=capabilities,
+            metric=metric,
+        )
+        for step_id, localization in outcomes.items()
+    }
+
+    # Only s2 produces a finding; everywhere else, classifiers abstain.
+    assert findings_by_step["s2"], "expected a provider-side finding for s2"
+    for sid in ("s1", "s3", "s4", "s5"):
+        assert findings_by_step[sid] == [], f"unexpected finding on {sid}"
+
+    s2_findings = findings_by_step["s2"]
+    assert len(s2_findings) == 1
+    finding = s2_findings[0]
+    assert finding.classification is Classification.PROVIDER_SIDE
+    assert finding.confidence is Confidence.HIGH
+    assert finding.evidence and finding.evidence[0].kind == "fingerprint_diff"

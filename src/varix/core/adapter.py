@@ -11,6 +11,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from varix.core.types import (
     AdapterCapabilities,
+    Classification,
     Confidence,
     Finding,
     LocalizationOutcome,
@@ -63,14 +64,19 @@ def unavailable_finding(
     metric_name: str,
     reason: str,
     *,
+    classification: Classification | None = None,
     localization: LocalizationOutcome = LocalizationOutcome.SOURCE,
 ) -> Finding:
-    """Construct a `Finding` carrying `Confidence.UNAVAILABLE` with a stated reason."""
+    """Construct a `Finding` carrying `Confidence.UNAVAILABLE` with a stated reason.
+
+    `classification` is optional: classifiers that know which category they
+    *would* have detected can pass it through so the report can name the gap.
+    """
     return Finding(
         step_id=step_id,
         localization=localization,
         confidence=Confidence.UNAVAILABLE,
         metric_name=metric_name,
-        classification=None,
+        classification=classification,
         reason=reason,
     )
