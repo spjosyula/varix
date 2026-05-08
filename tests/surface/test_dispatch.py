@@ -222,6 +222,89 @@ def test_execute_run_clean_run_records_no_notes(tmp_path: Path) -> None:
     assert analysis.notes == ()
 
 
+def test_execute_run_with_n_equal_one_records_inconclusive_note(tmp_path: Path) -> None:
+    """A deliberate `-n 1` run is honest about being unable to detect variance.
+
+    The run executes cleanly and the artifact is saved (it has value: cost,
+    structure, output captured). But the analysis cannot detect variance with
+    a single observation, so a note explicitly says so.
+    """
+    analysis, _ = execute_run(
+        pipeline="varix.adapters:FakeAdapter",
+        input_text="hello",
+        n=1,
+        base_dir=tmp_path,
+        clock=FrozenClock(_FROZEN),
+        rng=SequenceRng(["solo-id"]),
+    )
+    assert len(analysis.notes) == 1
+    note = analysis.notes[0]
+    assert "inconclusive" in note
+    assert "1 run" in note
+
+
+def test_execute_run_with_n_equal_two_records_no_inconclusive_note(tmp_path: Path) -> None:
+    """Two clean runs is the minimum for honest variance analysis — no note."""
+    analysis, _ = execute_run(
+        pipeline="varix.adapters:FakeAdapter",
+        input_text="hello",
+        n=2,
+        base_dir=tmp_path,
+        clock=FrozenClock(_FROZEN),
+        rng=SequenceRng(["pair-id"]),
+    )
+    assert analysis.notes == ()
+
+
+def test_execute_run_truncation_to_one_run_stacks_both_notes(tmp_path: Path) -> None:
+    """When run-fail leaves a single survivor, the user sees BOTH why AND what it means.
+
+    First note: the truncation reason (RunFailed catch).
+    Second note: the inconclusive verdict (insufficient-runs guard).
+    """
+    agent = tmp_path / "agent.py"
+    agent.write_text(
+        "from typing import Any\n"
+        "from datetime import UTC, datetime\n"
+        "from varix.core import (\n"
+        "    AdapterCapabilities, PipelineRun, StepGraph, StepRun,\n"
+        ")\n"
+        "_T = datetime(2026, 5, 8, 12, 0, 0, tzinfo=UTC)\n"
+        "\n"
+        "class _FlakyOnce:\n"
+        "    def __init__(self) -> None: self._calls = 0\n"
+        "    def capabilities(self) -> AdapterCapabilities:\n"
+        "        return AdapterCapabilities()\n"
+        "    async def pipeline_structure(self, pi: Any) -> StepGraph:\n"
+        "        return StepGraph(steps=())\n"
+        "    async def run_pipeline(self, pi: Any, seed: int | None = None) -> PipelineRun:\n"
+        "        self._calls += 1\n"
+        "        if self._calls > 1: raise RuntimeError('blew up')\n"
+        "        return PipelineRun(run_id=f'r{self._calls}', step_runs=(),\n"
+        "            started_at=_T, finished_at=_T)\n"
+        "    async def replay_step(self, sid: str, fi: Any,\n"
+        "        seed: int | None = None) -> StepRun:\n"
+        "        raise NotImplementedError\n"
+        "\n"
+        "adapter = _FlakyOnce()\n",
+        encoding="utf-8",
+    )
+    runs_dir = tmp_path / "runs"
+    analysis, _ = execute_run(
+        pipeline=str(agent),
+        input_text="hello",
+        n=5,
+        base_dir=runs_dir,
+        clock=FrozenClock(_FROZEN),
+        rng=SequenceRng(["truncated-id"]),
+    )
+    assert analysis.n == 1
+    assert len(analysis.notes) == 2
+    assert "blew up" in analysis.notes[0]  # truncation reason
+    assert "inconclusive" in analysis.notes[1]  # insufficient-runs verdict
+    assert "1 run" in analysis.notes[1]
+
+
 def test_execute_run_saves_partial_when_run_is_not_serializable(tmp_path: Path) -> None:
     """An adapter returning unsavable output is caught at run-time, not at save time.
 

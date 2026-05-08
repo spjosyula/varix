@@ -65,6 +65,12 @@ def execute_run(
         runs = list(exc.partial_runs)
         notes.append(str(exc))
 
+    if len(runs) < 2:
+        notes.append(
+            f"analysis is inconclusive: {len(runs)} run(s) completed; "
+            "variance analysis requires at least 2 runs to compare"
+        )
+
     finished = actual_clock.now()
 
     metric = ExactMatch()
