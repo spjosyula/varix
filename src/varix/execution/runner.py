@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from varix.core import Adapter, BudgetExceeded, CostSnapshot, PipelineRun, RunFailed, VarixError
@@ -39,6 +40,11 @@ async def run_n(
     cleanly before the failure. The original exception is chained via
     `__cause__`. Varix-typed errors (e.g. `BudgetExceeded`, `AdapterError`)
     pass through unchanged.
+
+    Each completed run is validated for JSON-serializability before it is
+    accepted; an unsavable run is also surfaced as `RunFailed` so we abort
+    on the first offender rather than discovering the problem at save time
+    (after N runs of cost). The bad run is *not* included in `partial_runs`.
     """
     if max_cost is not None and cost is None:
         cost = CostAccumulator()
@@ -51,6 +57,13 @@ async def run_n(
         except Exception as exc:
             raise RunFailed(
                 f"run {i + 1} of {n} failed: {type(exc).__name__}: {exc}",
+                partial_runs=tuple(runs),
+            ) from exc
+        try:
+            json.dumps(run.to_dict())
+        except (TypeError, ValueError, RecursionError) as exc:
+            raise RunFailed(
+                f"run {i + 1} of {n} produced non-JSON-serializable output: {exc}",
                 partial_runs=tuple(runs),
             ) from exc
         runs.append(run)

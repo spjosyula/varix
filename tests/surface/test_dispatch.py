@@ -220,3 +220,58 @@ def test_execute_run_clean_run_records_no_notes(tmp_path: Path) -> None:
         rng=SequenceRng(["id"]),
     )
     assert analysis.notes == ()
+
+
+def test_execute_run_saves_partial_when_run_is_not_serializable(tmp_path: Path) -> None:
+    """An adapter returning unsavable output is caught at run-time, not at save time.
+
+    Without per-run validation the failure would only surface inside
+    `storage.save` after every run had already been executed; the user
+    would lose all N runs of cost. The contract: abort on the first bad
+    run, preserve the clean ones, surface the reason in `notes`.
+    """
+    agent = tmp_path / "agent.py"
+    agent.write_text(
+        "from typing import Any\n"
+        "from datetime import UTC, datetime\n"
+        "from varix.core import (\n"
+        "    AdapterCapabilities, PipelineRun, StepGraph, StepRun,\n"
+        ")\n"
+        "_T = datetime(2026, 5, 8, 12, 0, 0, tzinfo=UTC)\n"
+        "\n"
+        "class _Unsavable:\n"
+        "    def __init__(self) -> None: self._calls = 0\n"
+        "    def capabilities(self) -> AdapterCapabilities:\n"
+        "        return AdapterCapabilities()\n"
+        "    async def pipeline_structure(self, pi: Any) -> StepGraph:\n"
+        "        return StepGraph(steps=())\n"
+        "    async def run_pipeline(self, pi: Any, seed: int | None = None) -> PipelineRun:\n"
+        "        self._calls += 1\n"
+        "        if self._calls > 2:\n"
+        "            bad = StepRun(step_id='s', inputs='i', output=object())\n"
+        "            return PipelineRun(run_id=f'r{self._calls}', step_runs=(bad,),\n"
+        "                started_at=_T, finished_at=_T)\n"
+        "        return PipelineRun(run_id=f'r{self._calls}', step_runs=(),\n"
+        "            started_at=_T, finished_at=_T)\n"
+        "    async def replay_step(self, sid: str, fi: Any,\n"
+        "        seed: int | None = None) -> StepRun:\n"
+        "        raise NotImplementedError\n"
+        "\n"
+        "adapter = _Unsavable()\n",
+        encoding="utf-8",
+    )
+    runs_dir = tmp_path / "runs"
+    analysis, path = execute_run(
+        pipeline=str(agent),
+        input_text="hello",
+        n=5,
+        base_dir=runs_dir,
+        clock=FrozenClock(_FROZEN),
+        rng=SequenceRng(["unsavable-id"]),
+    )
+    assert path.exists()
+    assert analysis.n == 2
+    assert len(analysis.notes) == 1
+    note = analysis.notes[0]
+    assert "non-JSON-serializable" in note
+    assert "run 3 of 5" in note

@@ -221,3 +221,65 @@ async def test_run_n_passes_through_varix_errors_unchanged() -> None:
     adapter: Adapter = _FailingAdapter(succeed_for=1, exc=AdapterError("malformed result"))
     with pytest.raises(AdapterError):
         await run_n(adapter, "x", n=3)
+
+
+class _UnsavableAdapter:
+    """Test adapter: `succeed_for` clean runs, then a run with non-JSON output."""
+
+    def __init__(self, succeed_for: int) -> None:
+        self._succeed_for = succeed_for
+        self._calls = 0
+
+    def capabilities(self) -> AdapterCapabilities:
+        return AdapterCapabilities()
+
+    async def pipeline_structure(self, pipeline_input: Any) -> StepGraph:
+        return StepGraph(steps=())
+
+    async def run_pipeline(self, pipeline_input: Any, seed: int | None = None) -> PipelineRun:
+        self._calls += 1
+        if self._calls > self._succeed_for:
+            bad = StepRun(step_id="s", inputs="i", output=object())
+            return PipelineRun(
+                run_id=f"r{self._calls}",
+                step_runs=(bad,),
+                started_at=_T,
+                finished_at=_T,
+            )
+        return PipelineRun(run_id=f"r{self._calls}", step_runs=(), started_at=_T, finished_at=_T)
+
+    async def replay_step(
+        self, step_id: str, fixed_inputs: Any, seed: int | None = None
+    ) -> StepRun:
+        raise NotImplementedError
+
+
+@pytest.mark.asyncio
+async def test_run_n_aborts_when_run_is_not_json_serializable() -> None:
+    adapter: Adapter = _UnsavableAdapter(succeed_for=2)
+    with pytest.raises(RunFailed) as ei:
+        await run_n(adapter, "x", n=5)
+    assert "run 3 of 5" in str(ei.value)
+    assert "non-JSON-serializable" in str(ei.value)
+
+
+@pytest.mark.asyncio
+async def test_unsavable_failure_carries_only_clean_partial_runs() -> None:
+    """The bad run must NOT appear in partial_runs; only the runs that serialized."""
+    adapter: Adapter = _UnsavableAdapter(succeed_for=3)
+    with pytest.raises(RunFailed) as ei:
+        await run_n(adapter, "x", n=10)
+    assert len(ei.value.partial_runs) == 3
+    # And every preserved run round-trips through JSON cleanly.
+    import json as _json
+
+    for r in ei.value.partial_runs:
+        _json.dumps(r.to_dict())
+
+
+@pytest.mark.asyncio
+async def test_unsavable_failure_chains_underlying_typeerror() -> None:
+    adapter: Adapter = _UnsavableAdapter(succeed_for=0)
+    with pytest.raises(RunFailed) as ei:
+        await run_n(adapter, "x", n=2)
+    assert isinstance(ei.value.__cause__, TypeError)
