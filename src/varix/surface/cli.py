@@ -1,10 +1,4 @@
-"""Typer-based CLI scaffold for varix.
-
-Defines the four user-facing commands (`run`, `show`, `explain`, `impact`)
-with their planned argument signatures. Each command currently exits with
-code 1 and a "not yet implemented" message; subsequent commits replace the
-bodies one at a time.
-"""
+"""Typer-based CLI for varix."""
 
 from __future__ import annotations
 
@@ -13,6 +7,7 @@ import logging
 import typer
 
 from varix import __version__
+from varix.surface.dispatch import execute_run
 
 app = typer.Typer(
     no_args_is_help=True,
@@ -78,8 +73,20 @@ def run_cmd(
     ),
 ) -> None:
     """Run the pipeline N times and write an analysis artifact."""
-    _ = pipeline, input_text, n, max_cost
-    _not_yet("run")
+    try:
+        analysis, path = execute_run(
+            pipeline=pipeline,
+            input_text=input_text,
+            n=n,
+            max_cost=max_cost,
+        )
+    except (FileNotFoundError, ImportError, AttributeError, TypeError) as exc:
+        typer.echo(f"varix run: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    typer.echo(f"wrote {path}")
+    typer.echo(f"analysis_id: {analysis.analysis_id}")
+    typer.echo(f"runs: {analysis.n}")
 
 
 @app.command("show")
