@@ -8,6 +8,7 @@ import typer
 
 from varix import __version__
 from varix.surface.dispatch import execute_run
+from varix.surface.reporter import render_analysis
 
 app = typer.Typer(
     no_args_is_help=True,
@@ -84,9 +85,9 @@ def run_cmd(
         typer.echo(f"varix run: {exc}", err=True)
         raise typer.Exit(code=1) from exc
 
+    typer.echo(render_analysis(analysis))
+    typer.echo("")
     typer.echo(f"wrote {path}")
-    typer.echo(f"analysis_id: {analysis.analysis_id}")
-    typer.echo(f"runs: {analysis.n}")
 
 
 @app.command("show")

@@ -11,6 +11,7 @@ import asyncio
 import os
 from pathlib import Path
 
+from varix.analysis import analyze
 from varix.core import (
     SCHEMA_VERSION,
     BudgetExceeded,
@@ -63,14 +64,17 @@ def execute_run(
 
     finished = actual_clock.now()
 
+    metric = ExactMatch()
+    result = analyze(runs, adapter.capabilities(), metric=metric)
+
     analysis = PipelineAnalysis(
         analysis_id=actual_rng.new_id(),
         pipeline_name=pipeline,
         n=len(runs),
-        metric_name=ExactMatch().name(),
+        metric_name=metric.name(),
         schema_version=SCHEMA_VERSION,
         runs=tuple(runs),
-        findings=(),
+        findings=result.findings,
         started_at=started,
         finished_at=finished,
         total_cost=cost.snapshot(),

@@ -5,6 +5,13 @@ Does not import adapters or any I/O layer.
 """
 
 from varix.analysis.localizer import Localizer
+from varix.analysis.orchestration import AnalysisResult, analyze
 from varix.analysis.registry import Classifier, ClassifierRegistry
 
-__all__ = ["Classifier", "ClassifierRegistry", "Localizer"]
+__all__ = [
+    "AnalysisResult",
+    "Classifier",
+    "ClassifierRegistry",
+    "Localizer",
+    "analyze",
+]
