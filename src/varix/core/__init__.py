@@ -29,6 +29,7 @@ from varix.core.types import (
     StepRun,
     ToolCall,
 )
+from varix.core.variance import ExactMatch, VarianceMetric
 
 __all__ = [
     "SCHEMA_VERSION",
@@ -41,6 +42,7 @@ __all__ = [
     "Confidence",
     "CostSnapshot",
     "Evidence",
+    "ExactMatch",
     "Finding",
     "LocalizationOutcome",
     "PipelineAnalysis",
@@ -51,6 +53,7 @@ __all__ = [
     "StepRun",
     "StructuralMismatch",
     "ToolCall",
+    "VarianceMetric",
     "VarixError",
     "unavailable_finding",
 ]
