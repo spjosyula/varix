@@ -11,7 +11,7 @@ import asyncio
 import os
 from pathlib import Path
 
-from varix.analysis import analyze
+from varix.analysis import ImpactEstimator, analyze
 from varix.core import (
     SCHEMA_VERSION,
     BudgetExceeded,
@@ -24,7 +24,7 @@ from varix.core import (
 )
 from varix.execution import CostAccumulator, run_n
 from varix.surface.loader import load_adapter
-from varix.surface.reporter import render_analysis, render_explain
+from varix.surface.reporter import render_analysis, render_explain, render_impact
 from varix.surface.storage import latest_analysis, load, load_path, save
 
 _RUNS_DIR_ENV = "VARIX_RUNS_DIR"
@@ -126,6 +126,35 @@ def execute_explain(
     if step_id not in step_ids:
         raise ValueError(f"step {step_id!r} not found in analysis {analysis.analysis_id!r}")
     return render_explain(analysis, step_id)
+
+
+def execute_impact(
+    step_id: str,
+    analysis_target: str | None = None,
+    *,
+    base_dir: Path | None = None,
+) -> str:
+    """Load an artifact and render the impact report for `step_id`.
+
+    Mirrors `execute_explain`: defaults to the latest artifact, raises
+    `FileNotFoundError` when none exist, and `ValueError` when `step_id`
+    is not present in the chosen artifact.
+    """
+    if analysis_target is not None:
+        analysis = _load_target(analysis_target, base_dir)
+    else:
+        resolved_dir = resolve_runs_dir(base_dir)
+        latest = latest_analysis(resolved_dir)
+        if latest is None:
+            raise FileNotFoundError("no saved analyses found")
+        analysis = load_path(latest)
+
+    step_ids = {sr.step_id for run in analysis.runs for sr in run.step_runs}
+    if step_id not in step_ids:
+        raise ValueError(f"step {step_id!r} not found in analysis {analysis.analysis_id!r}")
+
+    report = ImpactEstimator().estimate(analysis.runs, step_id)
+    return render_impact(analysis, report)
 
 
 def _load_target(target: str, base_dir: Path | None) -> PipelineAnalysis:

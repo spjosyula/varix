@@ -4,6 +4,7 @@ Depends only on `varix.core` types and the outputs of the execution layer.
 Does not import adapters or any I/O layer.
 """
 
+from varix.analysis.impact import ImpactBehavior, ImpactEstimator, ImpactReport
 from varix.analysis.localizer import Localizer
 from varix.analysis.orchestration import (
     AnalysisResult,
@@ -16,6 +17,9 @@ __all__ = [
     "AnalysisResult",
     "Classifier",
     "ClassifierRegistry",
+    "ImpactBehavior",
+    "ImpactEstimator",
+    "ImpactReport",
     "Localizer",
     "analyze",
     "detect_structural_mismatch",

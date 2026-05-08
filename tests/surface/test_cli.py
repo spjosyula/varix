@@ -158,12 +158,6 @@ def test_explain_with_no_saved_analyses_exits_one(
     assert "varix explain:" in result.output
 
 
-def test_impact_stub_exits_non_zero_with_message() -> None:
-    result = runner.invoke(app, ["impact", "s1"])
-    assert result.exit_code == 1
-    assert "not yet implemented" in result.output
-
-
 def test_run_help_lists_planned_options() -> None:
     result = runner.invoke(app, ["run", "--help"], env=_WIDE_HELP_ENV)
     assert result.exit_code == 0

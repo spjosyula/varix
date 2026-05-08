@@ -8,7 +8,12 @@ import typer
 
 from varix import __version__
 from varix.core import RefusalRequired, StructuralMismatch
-from varix.surface.dispatch import execute_explain, execute_run, execute_show
+from varix.surface.dispatch import (
+    execute_explain,
+    execute_impact,
+    execute_run,
+    execute_show,
+)
 from varix.surface.reporter import render_analysis
 
 app = typer.Typer(
@@ -147,12 +152,19 @@ def impact_cmd(
     analysis_id: str | None = typer.Option(
         None,
         "--analysis",
-        help="Analysis ID. Defaults to the most recent.",
+        help="Analysis ID or path. Defaults to the most recent saved artifact.",
     ),
 ) -> None:
     """Estimate downstream impact of variance at the given source step."""
-    _ = step_id, analysis_id
-    _not_yet("impact")
+    try:
+        rendered = execute_impact(step_id, analysis_id)
+    except RefusalRequired as exc:
+        typer.echo(f"varix impact: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    except (FileNotFoundError, OSError, ValueError) as exc:
+        typer.echo(f"varix impact: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(rendered)
 
 
 if __name__ == "__main__":

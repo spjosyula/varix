@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from varix.analysis import Localizer
+from varix.analysis import ImpactEstimator, ImpactReport, Localizer
 from varix.core import ExactMatch, Finding, LocalizationOutcome, PipelineAnalysis
 
-__all__ = ["render_analysis", "render_explain"]
+__all__ = ["render_analysis", "render_explain", "render_impact"]
 
 
 def render_analysis(analysis: PipelineAnalysis) -> str:
@@ -26,10 +26,15 @@ def render_analysis(analysis: PipelineAnalysis) -> str:
         findings_by_step.setdefault(finding.step_id, []).append(finding)
 
     step_ids = [sr.step_id for sr in analysis.runs[0].step_runs] if analysis.runs else []
+    estimator = ImpactEstimator()
 
     for sid in step_ids:
         outcome = outcomes.get(sid, LocalizationOutcome.DETERMINISTIC)
-        lines.append(f"step {sid}: {outcome.value}")
+        line = f"step {sid}: {outcome.value}"
+        if outcome is LocalizationOutcome.SOURCE:
+            impact = estimator.estimate(analysis.runs, sid)
+            line += f" [{impact.behavior.value}]"
+        lines.append(line)
         for f in findings_by_step.get(sid, []):
             cat = f.classification.value if f.classification is not None else "unknown"
             conf = f.confidence.value
@@ -78,3 +83,27 @@ def render_explain(analysis: PipelineAnalysis, step_id: str) -> str:
         lines.append("")
 
     return "\n".join(lines).rstrip()
+
+
+def render_impact(analysis: PipelineAnalysis, report: ImpactReport) -> str:
+    """Render an `ImpactReport` for a single source step.
+
+    ASCII-only, no trailing newline. Format mirrors `render_explain` for
+    consistency across CLI commands.
+    """
+    lines: list[str] = []
+    lines.append(f"=== impact {report.source_step_id} ===")
+    lines.append(f"analysis_id: {analysis.analysis_id}")
+    lines.append(f"pipeline:    {analysis.pipeline_name}")
+    lines.append("")
+    lines.append(f"behavior:    {report.behavior.value}")
+    lines.append(f"confidence:  {report.confidence.value}")
+    lines.append(f"reason:      {report.reason}")
+    if report.evidence:
+        lines.append("")
+        lines.append("evidence:")
+        for ev in report.evidence:
+            lines.append(f"  [{ev.kind}] {ev.description}")
+            for k, v in ev.data.items():
+                lines.append(f"    {k}: {v}")
+    return "\n".join(lines)
