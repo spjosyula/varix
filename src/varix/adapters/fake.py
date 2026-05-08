@@ -1,0 +1,147 @@
+"""FakeAdapter — a controlled five-step pipeline for tests.
+
+Variance can be injected per step per category to validate localizer and
+classifier behavior without touching real model providers. With no variance
+configured, every call to `run_pipeline` and `replay_step` produces
+identical step output.
+"""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime
+from typing import Any
+
+from varix.core import (
+    AdapterCapabilities,
+    Classification,
+    PipelineRun,
+    Step,
+    StepGraph,
+    StepRun,
+    ToolCall,
+)
+
+_STEPS: tuple[Step, ...] = (
+    Step(id="s1", name="planner", index=0),
+    Step(id="s2", name="researcher", index=1),
+    Step(id="s3", name="ranker", index=2),
+    Step(id="s4", name="summarizer", index=3),
+    Step(id="s5", name="responder", index=4),
+)
+
+_STABLE_TIME = datetime(2026, 5, 8, 12, 0, 0, tzinfo=UTC)
+
+
+class FakeAdapter:
+    """Five-step test pipeline. Pass `variance={step_id: Classification(...)}` to inject."""
+
+    def __init__(self, *, variance: dict[str, Classification] | None = None) -> None:
+        self._variance: dict[str, Classification] = dict(variance) if variance else {}
+        self._run_counter = 0
+        self._replay_counter = 0
+
+    def capabilities(self) -> AdapterCapabilities:
+        return AdapterCapabilities(
+            exposes_fingerprint=True,
+            exposes_tool_calls=True,
+            supports_replay=True,
+        )
+
+    async def pipeline_structure(self, pipeline_input: Any) -> StepGraph:
+        return StepGraph(steps=_STEPS)
+
+    async def run_pipeline(self, pipeline_input: Any, seed: int | None = None) -> PipelineRun:
+        self._run_counter += 1
+        n = self._run_counter
+        prev_output: Any = pipeline_input
+        step_runs: list[StepRun] = []
+        for step in _STEPS:
+            sr = _build_step_run(step, prev_output, n, self._variance.get(step.id))
+            step_runs.append(sr)
+            prev_output = sr.output
+        return PipelineRun(
+            run_id=f"r{n}",
+            step_runs=tuple(step_runs),
+            started_at=_STABLE_TIME,
+            finished_at=_STABLE_TIME,
+        )
+
+    async def replay_step(
+        self, step_id: str, fixed_inputs: Any, seed: int | None = None
+    ) -> StepRun:
+        self._replay_counter += 1
+        step = next(s for s in _STEPS if s.id == step_id)
+        return _build_step_run(
+            step, fixed_inputs, self._replay_counter, self._variance.get(step_id)
+        )
+
+
+def _build_step_run(
+    step: Step, inputs: Any, run_index: int, category: Classification | None
+) -> StepRun:
+    base_output = f"{step.id}_output"
+    base_tool_calls: tuple[ToolCall, ...] = (
+        ToolCall(name="lookup", arguments={"q": str(inputs)}, result="hit"),
+    )
+    base_metadata = {"system_fingerprint": "fp_stable"}
+
+    if category is None:
+        return StepRun(
+            step_id=step.id,
+            inputs=inputs,
+            output=base_output,
+            tool_calls=base_tool_calls,
+            provider_metadata=base_metadata,
+        )
+
+    if category is Classification.PROVIDER_SIDE:
+        fp = "fp_a" if run_index % 2 == 1 else "fp_b"
+        return StepRun(
+            step_id=step.id,
+            inputs=inputs,
+            output=base_output,
+            tool_calls=base_tool_calls,
+            provider_metadata={"system_fingerprint": fp},
+        )
+
+    if category is Classification.TOOL_SIDE:
+        result = f"hit_{run_index}"
+        return StepRun(
+            step_id=step.id,
+            inputs=inputs,
+            output=base_output,
+            tool_calls=(ToolCall(name="lookup", arguments={"q": str(inputs)}, result=result),),
+            provider_metadata=base_metadata,
+        )
+
+    if category is Classification.ORDERING:
+        a = ToolCall(name="lookup", arguments={"q": "first"}, result="alpha")
+        b = ToolCall(name="lookup", arguments={"q": "second"}, result="beta")
+        ordered = (a, b) if run_index % 2 == 1 else (b, a)
+        return StepRun(
+            step_id=step.id,
+            inputs=inputs,
+            output=base_output,
+            tool_calls=ordered,
+            provider_metadata=base_metadata,
+        )
+
+    if category is Classification.PROMPT_SIDE:
+        return StepRun(
+            step_id=step.id,
+            inputs=inputs,
+            output=f"{base_output}_v{run_index}",
+            tool_calls=base_tool_calls,
+            provider_metadata=base_metadata,
+        )
+
+    if category is Classification.TIME_OR_STATE:
+        return StepRun(
+            step_id=step.id,
+            inputs=inputs,
+            output=f"{base_output} at 2026-05-08T12:00:{run_index:02d}Z",
+            tool_calls=base_tool_calls,
+            provider_metadata=base_metadata,
+        )
+
+    raise ValueError(f"unhandled category: {category}")
