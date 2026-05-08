@@ -79,7 +79,9 @@ class FakeAdapter:
 def _build_step_run(
     step: Step, inputs: Any, run_index: int, category: Classification | None
 ) -> StepRun:
-    base_output = f"{step.id}_output"
+    # Include inputs so variance propagates through downstream steps under the
+    # baseline (no-category) path — gives the Localizer real DOWNSTREAM cases.
+    base_output = f"{step.id}_output:{inputs}"
     base_tool_calls: tuple[ToolCall, ...] = (
         ToolCall(name="lookup", arguments={"q": str(inputs)}, result="hit"),
     )
