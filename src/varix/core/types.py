@@ -1,11 +1,7 @@
 """Core domain types for varix.
 
-All types are frozen dataclasses with JSON round-trip support via
-`to_dict()` / `from_dict()`. They have no I/O, no framework imports, and
-define the data shape every other layer of varix consumes.
-
-The schema version is bumped on breaking changes only; additive changes
-keep the version stable so old artifacts remain readable.
+Frozen dataclasses with JSON round-trip support via `to_dict()` / `from_dict()`.
+No I/O, no framework imports. Every other layer is built on these.
 """
 
 from __future__ import annotations
@@ -15,7 +11,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-SCHEMA_VERSION = "1.0"
+SCHEMA_VERSION = "0.1"
 
 
 class Confidence(enum.Enum):
@@ -56,11 +52,7 @@ class Classification(enum.Enum):
 
 @dataclass(frozen=True, slots=True)
 class CostSnapshot:
-    """Token and dollar accounting at a point in time.
-
-    Snapshots are immutable values in core. The mutable accumulator that
-    produces them lives in the execution layer.
-    """
+    """Token and dollar accounting at a point in time."""
 
     input_tokens: int = 0
     output_tokens: int = 0
@@ -247,12 +239,7 @@ class PipelineRun:
 
 @dataclass(frozen=True, slots=True)
 class Evidence:
-    """A piece of evidence backing a finding.
-
-    `kind` is a stable machine-readable tag (e.g. "fingerprint_diff").
-    `description` is human-readable for the report. `data` is the raw
-    payload reviewers can inspect via `varix explain`.
-    """
+    """A piece of evidence backing a finding."""
 
     kind: str
     description: str

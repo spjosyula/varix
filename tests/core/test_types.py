@@ -6,9 +6,11 @@ to_dict / from_dict round-trip across a wide range of valid inputs.
 
 from __future__ import annotations
 
+from dataclasses import FrozenInstanceError
 from datetime import UTC, datetime
 from typing import Any
 
+import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
@@ -126,6 +128,16 @@ def _finding(draw: st.DrawFn) -> Finding:
 def test_schema_version_is_string() -> None:
     assert isinstance(SCHEMA_VERSION, str)
     assert SCHEMA_VERSION
+
+
+def test_domain_types_are_frozen() -> None:
+    step = Step(id="s1", name="planner", index=0)
+    with pytest.raises(FrozenInstanceError):
+        step.name = "renamed"  # type: ignore[misc]
+
+    cost = CostSnapshot(input_tokens=10)
+    with pytest.raises(FrozenInstanceError):
+        cost.input_tokens = 20  # type: ignore[misc]
 
 
 def test_confidence_unavailable_is_first_class() -> None:
