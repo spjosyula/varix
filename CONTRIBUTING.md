@@ -54,7 +54,7 @@ docs: clarify schema versioning
 
 - Python 3.11+; modern type hints (`list[int]`, `X | None`).
 - `ruff check` and `ruff format` should pass.
-- `mypy --strict` (kicks in from C1.1).
+- `mypy --strict` for `src/varix/`.
 - Async-first. `Adapter` methods are `async def`.
 
 ## Comments

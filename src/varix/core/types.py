@@ -85,9 +85,7 @@ class CostSnapshot:
 class AdapterCapabilities:
     """What an adapter can honestly provide.
 
-    Each flag drives a specific analysis path. When a flag is False, the
-    matching classifier emits `Confidence.UNAVAILABLE` rather than guessing.
-    Resist adding new flags until a classifier needs one.
+    When a flag is False, the matching classifier emits `Confidence.UNAVAILABLE`.
     """
 
     exposes_fingerprint: bool = False
@@ -130,8 +128,8 @@ class Step:
 class StepGraph:
     """The ordered set of steps an adapter declares for a given input.
 
-    v1 requires this to be stable across N runs; the runner uses it for
-    structural-mismatch refusal.
+    Must be stable across runs of the same input; structural variance
+    triggers refusal.
     """
 
     steps: tuple[Step, ...]

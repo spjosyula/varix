@@ -1,8 +1,6 @@
 """varix error hierarchy.
 
-Every error varix raises is a subclass of `VarixError`. This lets callers
-catch all varix-originating errors with a single except clause while still
-distinguishing causes when they need to.
+Every error varix raises is a subclass of `VarixError`.
 """
 
 from __future__ import annotations
@@ -17,35 +15,16 @@ class AdapterError(VarixError):
 
 
 class CapabilityMissing(VarixError):
-    """An operation required an adapter capability that was not declared.
-
-    Raised, for example, when the step replayer is asked to replay a step
-    on an adapter whose `capabilities().supports_replay` is False. The
-    correct caller response is usually to emit an `UNAVAILABLE` finding,
-    not to retry.
-    """
+    """An operation required an adapter capability that was not declared."""
 
 
 class BudgetExceeded(VarixError):
-    """The cost budget (`--max-cost`) was reached.
-
-    Analysis halts with the partial state it has accumulated so far; the
-    surface layer is responsible for writing whatever artifact is possible.
-    """
+    """The cost budget (`--max-cost`) was reached."""
 
 
 class StructuralMismatch(VarixError):
-    """N runs of the pipeline produced different step graphs.
-
-    v1 cannot align findings across runs whose structure varies, and refuses
-    to produce a misleading analysis. The user-facing report explains what
-    differed and exits with a refusal code.
-    """
+    """Pipeline runs produced different step graphs and cannot be aligned."""
 
 
 class RefusalRequired(VarixError):
-    """varix has decided not to produce a finding rather than guess.
-
-    Distinct from `StructuralMismatch` — this is the generic refusal raised
-    when an analysis path concludes it cannot honestly answer.
-    """
+    """varix declined to produce a finding rather than guess."""
