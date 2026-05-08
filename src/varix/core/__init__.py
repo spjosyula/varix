@@ -4,6 +4,7 @@ This package has no I/O, no network, and no framework imports. Everything
 varix depends on internally is built on top of these types.
 """
 
+from varix.core.adapter import Adapter, unavailable_finding
 from varix.core.errors import (
     AdapterError,
     BudgetExceeded,
@@ -31,6 +32,7 @@ from varix.core.types import (
 
 __all__ = [
     "SCHEMA_VERSION",
+    "Adapter",
     "AdapterCapabilities",
     "AdapterError",
     "BudgetExceeded",
@@ -50,4 +52,5 @@ __all__ = [
     "StructuralMismatch",
     "ToolCall",
     "VarixError",
+    "unavailable_finding",
 ]
