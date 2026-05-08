@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+build/
+dist/
+wheels/
+.eggs/
+
+# Test / coverage / cache
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.tox/
+.hypothesis/
+
+# Virtual envs
+.venv/
+venv/
+env/
+ENV/
+
+# Editor / OS
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Env files
+.env
+.env.*
+!.env.example
+
+# varix runtime artifacts (per-user, not project state)
+.varix/
+
+# Claude Code local config (per-user)
+.claude/
