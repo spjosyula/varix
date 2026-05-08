@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
+from typing import Any
 
 from varix.core import PipelineRun, StepRun, VarianceMetric
 
@@ -33,3 +35,8 @@ def outputs_differ(observations: Sequence[StepRun], metric: VarianceMetric) -> b
         return False
     first = observations[0].output
     return any(not metric.equivalent(first, sr.output) for sr in observations[1:])
+
+
+def args_key(arguments: dict[str, Any]) -> str:
+    """Stable, hashable canonical form of a tool's argument dict (JSON, sorted keys)."""
+    return json.dumps(arguments, sort_keys=True, default=str)

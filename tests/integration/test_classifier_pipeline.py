@@ -122,3 +122,36 @@ async def test_tool_side_variance_at_s2_produces_high_finding() -> None:
     assert finding.classification is Classification.TOOL_SIDE
     assert finding.confidence is Confidence.HIGH
     assert finding.evidence[0].kind == "tool_result_diff"
+
+
+@pytest.mark.asyncio
+async def test_ordering_variance_at_s2_produces_high_finding() -> None:
+    adapter = FakeAdapter(variance={"s2": Classification.ORDERING})
+    runs = await run_n(adapter, "hello", n=3)
+    metric = ExactMatch()
+
+    outcomes = Localizer(metric=metric).classify_steps(runs)
+    registry = _all_classifiers()
+    capabilities = adapter.capabilities()
+
+    findings_by_step = {
+        step_id: registry.classify_step(
+            step_id=step_id,
+            localization=localization,
+            runs=runs,
+            replays=[],
+            capabilities=capabilities,
+            metric=metric,
+        )
+        for step_id, localization in outcomes.items()
+    }
+
+    # Exactly one ordering finding on s2; nothing on the other steps.
+    assert len(findings_by_step["s2"]) == 1
+    for sid in ("s1", "s3", "s4", "s5"):
+        assert findings_by_step[sid] == [], f"unexpected finding on {sid}"
+
+    finding = findings_by_step["s2"][0]
+    assert finding.classification is Classification.ORDERING
+    assert finding.confidence is Confidence.HIGH
+    assert finding.evidence[0].kind == "ordering_diff"

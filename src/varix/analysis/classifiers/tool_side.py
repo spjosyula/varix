@@ -12,11 +12,10 @@ that diverge within a single run are out of scope here.
 
 from __future__ import annotations
 
-import json
 from collections.abc import Sequence
 from typing import Any
 
-from varix.analysis._helpers import gather_step_runs, outputs_differ
+from varix.analysis._helpers import args_key, gather_step_runs, outputs_differ
 from varix.core import (
     AdapterCapabilities,
     Classification,
@@ -111,12 +110,7 @@ def _first_results_by_key(obs: StepRun) -> dict[tuple[str, str], Any]:
     """Map (tool_name, canonical_args) → first observed result in this StepRun."""
     out: dict[tuple[str, str], Any] = {}
     for tc in obs.tool_calls:
-        key = (tc.name, _args_key(tc.arguments))
+        key = (tc.name, args_key(tc.arguments))
         if key not in out:
             out[key] = tc.result
     return out
-
-
-def _args_key(arguments: dict[str, Any]) -> str:
-    """Stable, hashable canonical form of a tool's argument dict."""
-    return json.dumps(arguments, sort_keys=True, default=str)
