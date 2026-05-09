@@ -41,7 +41,7 @@ def test_report_header_lists_required_fields(tmp_path: Path) -> None:
 
 def test_deterministic_report_shows_no_findings(tmp_path: Path) -> None:
     report = _execute("varix.adapters:FakeAdapter", tmp_path)
-    assert "0 finding(s), 0 source step(s)" in report
+    assert "verdict:     every run produced the same output." in report
     assert "step s1: deterministic" in report
     assert "step s2: deterministic" in report
     assert "step s5: deterministic" in report
@@ -64,14 +64,13 @@ def test_deterministic_report_byte_for_byte_golden(tmp_path: Path) -> None:
         "n:           3\n"
         "metric:      exact\n"
         "cost:        $0.0000\n"
+        "verdict:     every run produced the same output.\n"
         "\n"
         "step s1: deterministic\n"
         "step s2: deterministic\n"
         "step s3: deterministic\n"
         "step s4: deterministic\n"
-        "step s5: deterministic\n"
-        "\n"
-        "0 finding(s), 0 source step(s)"
+        "step s5: deterministic"
     )
     assert report == expected
 
@@ -105,7 +104,8 @@ def test_provider_side_scenario_renders_high_finding(tmp_path: Path) -> None:
     assert "step s2: deterministic" in report
     assert "-> provider rolled the model (high):" in report
     assert "system_fingerprint" in report
-    assert "1 finding(s), 0 source step(s)" in report
+    # Output is stable (only fingerprint flips), so the headline says so.
+    assert "verdict:     every run produced the same output." in report
 
 
 def test_prompt_side_scenario_renders_medium_residual(tmp_path: Path) -> None:
@@ -124,7 +124,7 @@ def test_prompt_side_scenario_renders_medium_residual(tmp_path: Path) -> None:
     assert "-> sampling / temperature (medium):" in report
     assert "step s3: inherited from upstream" in report
     assert "step s5: inherited from upstream" in report
-    assert "1 finding(s), 1 source step(s)" in report
+    assert "verdict:     1 step varies, and you get a different final output each run." in report
 
 
 def test_time_or_state_scenario_renders_low_finding(tmp_path: Path) -> None:
@@ -141,7 +141,7 @@ def test_time_or_state_scenario_renders_low_finding(tmp_path: Path) -> None:
     report = render_analysis(analysis)
     assert "step s5: source of variance" in report
     assert "-> clock or random source (low):" in report
-    assert "1 finding(s), 1 source step(s)" in report
+    assert "verdict:     1 step varies, and you get a different final output each run." in report
 
 
 @pytest.mark.parametrize("scenario", ["PROVIDER_SIDE", "TOOL_SIDE", "ORDERING"])
@@ -160,6 +160,59 @@ def test_high_confidence_scenarios_each_emit_exactly_one_finding(
     )
     assert len(analysis.findings) == 1
     assert analysis.findings[0].confidence.value == "high"
+
+
+def test_headline_pluralizes_for_multiple_source_steps() -> None:
+    """Two source steps with stable inputs but varying outputs; headline says `2 steps vary`."""
+    from varix.core import (
+        SCHEMA_VERSION,
+        CostSnapshot,
+        PipelineAnalysis,
+        PipelineRun,
+        StepRun,
+    )
+    from varix.surface.reporter import render_analysis
+
+    def _run(run_id: str, s1_out: str, s2_out: str) -> PipelineRun:
+        return PipelineRun(
+            run_id=run_id,
+            step_runs=(
+                StepRun(step_id="s1", inputs="constant_in_1", output=s1_out),
+                StepRun(step_id="s2", inputs="constant_in_2", output=s2_out),
+            ),
+            started_at=_FROZEN,
+            finished_at=_FROZEN,
+        )
+
+    analysis = PipelineAnalysis(
+        analysis_id="multi-id",
+        pipeline_name="manual",
+        n=2,
+        metric_name="exact",
+        schema_version=SCHEMA_VERSION,
+        runs=(_run("r1", "a", "c"), _run("r2", "A", "C")),
+        findings=(),
+        started_at=_FROZEN,
+        finished_at=_FROZEN,
+        total_cost=CostSnapshot(),
+    )
+    report = render_analysis(analysis)
+    assert "verdict:     2 steps vary, and you get a different final output each run." in report
+
+
+def test_headline_omitted_when_n_is_one(tmp_path: Path) -> None:
+    """At n<2 the WARNING banner explains inconclusiveness; no verdict line."""
+    analysis, _ = execute_run(
+        pipeline="varix.adapters:FakeAdapter",
+        input_text="hello",
+        n=1,
+        base_dir=tmp_path,
+        clock=FrozenClock(_FROZEN),
+        rng=SequenceRng(["solo-id"]),
+    )
+    report = render_analysis(analysis)
+    assert "verdict:" not in report
+    assert "WARNING:" in report  # commit 3's inconclusive note still surfaces
 
 
 def test_render_emits_warning_banner_when_notes_present() -> None:

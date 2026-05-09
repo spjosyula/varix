@@ -47,8 +47,31 @@ def _label_classification(c: Classification | None) -> str:
     return _CLASSIFICATION_LABELS[c] if c is not None else "unknown"
 
 
+def _headline(analysis: PipelineAnalysis, outcomes: dict[str, LocalizationOutcome]) -> str | None:
+    """One-sentence verdict in plain English, or None when inconclusive (n<2)."""
+    if analysis.n < 2:
+        return None  # WARNING banner already explains the inconclusive case
+
+    n_sources = sum(1 for o in outcomes.values() if o is LocalizationOutcome.SOURCE)
+    if n_sources == 0:
+        return "every run produced the same output."
+
+    final_step_id = analysis.runs[0].step_runs[-1].step_id if analysis.runs else None
+    final_outcome = outcomes.get(final_step_id) if final_step_id is not None else None
+    final_varies = (
+        final_outcome is not None and final_outcome is not LocalizationOutcome.DETERMINISTIC
+    )
+
+    subj = "1 step varies" if n_sources == 1 else f"{n_sources} steps vary"
+    if final_varies:
+        return f"{subj}, and you get a different final output each run."
+    return f"{subj}, but the final output is the same every run."
+
+
 def render_analysis(analysis: PipelineAnalysis) -> str:
     """Return a plain-text report for `analysis`. ASCII-only, no trailing newline."""
+    outcomes = Localizer(metric=ExactMatch()).classify_steps(analysis.runs)
+
     lines: list[str] = []
     lines.append("=== varix analysis ===")
     lines.append(f"pipeline:    {analysis.pipeline_name}")
@@ -56,6 +79,9 @@ def render_analysis(analysis: PipelineAnalysis) -> str:
     lines.append(f"n:           {analysis.n}")
     lines.append(f"metric:      {analysis.metric_name}")
     lines.append(f"cost:        ${analysis.total_cost.dollars:.4f}")
+    headline = _headline(analysis, outcomes)
+    if headline is not None:
+        lines.append(f"verdict:     {headline}")
     lines.append("")
 
     if analysis.notes:
@@ -63,8 +89,6 @@ def render_analysis(analysis: PipelineAnalysis) -> str:
         for note in analysis.notes:
             lines.append(f"  {note}")
         lines.append("")
-
-    outcomes = Localizer(metric=ExactMatch()).classify_steps(analysis.runs)
 
     findings_by_step: dict[str, list[Finding]] = {}
     for finding in analysis.findings:
@@ -85,11 +109,6 @@ def render_analysis(analysis: PipelineAnalysis) -> str:
             conf = _CONFIDENCE_LABELS[f.confidence]
             reason = f.reason or ""
             lines.append(f"  -> {cat} ({conf}): {reason}")
-
-    n_findings = len(analysis.findings)
-    n_sources = sum(1 for o in outcomes.values() if o is LocalizationOutcome.SOURCE)
-    lines.append("")
-    lines.append(f"{n_findings} finding(s), {n_sources} source step(s)")
 
     return "\n".join(lines)
 
