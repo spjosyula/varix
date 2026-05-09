@@ -58,6 +58,16 @@ def _paren_confidence(c: Confidence) -> str:
     return f"{_CONFIDENCE_LABELS[c]} confidence"
 
 
+def _impact_verdict(report: ImpactReport) -> str:
+    sid = report.source_step_id
+    conf = _paren_confidence(report.confidence)
+    if report.confidence is Confidence.UNAVAILABLE:
+        return f"impact of {sid} could not be determined ({conf})."
+    if report.behavior is ImpactBehavior.PROPAGATES:
+        return f"{sid} changes the final output of every run ({conf})."
+    return f"{sid}'s variance is absorbed before the final output ({conf})."
+
+
 def _headline(analysis: PipelineAnalysis, outcomes: dict[str, LocalizationOutcome]) -> str | None:
     """One-sentence verdict in plain English, or None when inconclusive (n<2)."""
     if analysis.n < 2:
@@ -166,8 +176,7 @@ def render_impact(analysis: PipelineAnalysis, report: ImpactReport) -> str:
     lines.append(f"analysis_id: {analysis.analysis_id}")
     lines.append(f"pipeline:    {analysis.pipeline_name}")
     lines.append("")
-    lines.append(f"behavior:    {report.behavior.value}")
-    lines.append(f"confidence:  {_CONFIDENCE_LABELS[report.confidence]}")
+    lines.append(f"verdict:     {_impact_verdict(report)}")
     lines.append(f"reason:      {report.reason}")
     if report.evidence:
         lines.append("")

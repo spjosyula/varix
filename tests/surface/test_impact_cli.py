@@ -28,6 +28,8 @@ from varix.surface.storage import save
 _T = datetime(2026, 5, 8, 12, 0, 0, tzinfo=UTC)
 _FROZEN = _T
 
+_PROPAGATES_VERDICT = "verdict:     s2 changes the final output of every run (high confidence)."
+
 
 def _adapter_file(tmp_path: Path, variance_kw: str) -> Path:
     path = tmp_path / "agent.py"
@@ -58,8 +60,7 @@ def test_render_impact_includes_header_and_verdict(tmp_path: Path) -> None:
     rendered = render_impact(analysis, report)
     assert "=== impact s2 ===" in rendered
     assert "analysis_id: impact-test-id" in rendered
-    assert "behavior:    propagates" in rendered
-    assert "confidence:  high" in rendered
+    assert _PROPAGATES_VERDICT in rendered
     assert "evidence:" in rendered
 
 
@@ -118,7 +119,7 @@ async def test_execute_impact_with_explicit_analysis_id(tmp_path: Path) -> None:
     )
     save(analysis, base_dir=tmp_path)
     rendered = execute_impact("s2", "impact-id", base_dir=tmp_path)
-    assert "behavior:    propagates" in rendered
+    assert _PROPAGATES_VERDICT in rendered
     assert "=== impact s2 ===" in rendered
 
 
@@ -200,7 +201,7 @@ def test_cli_impact_command_renders_report(tmp_path: Path, monkeypatch: pytest.M
     result = cli_runner.invoke(app, ["impact", "s2"])
     assert result.exit_code == 0
     assert "=== impact s2 ===" in result.output
-    assert "behavior:    propagates" in result.output
+    assert _PROPAGATES_VERDICT in result.output
 
 
 def test_cli_impact_unknown_step_exits_one(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
