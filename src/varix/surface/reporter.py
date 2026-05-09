@@ -1,14 +1,13 @@
-"""Terminal reporter — renders a `PipelineAnalysis` as human-readable text.
+"""Terminal reporter — renders a `PipelineAnalysis` as plain-English text.
 
-Internal taxonomy strings (`Classification.*.value`, `LocalizationOutcome.*.value`,
-`Confidence.UNAVAILABLE.value`) are translated to plain English at this boundary
-so the report is readable without learning varix's vocabulary. Internal names
-stay inside the artifact JSON.
+Internal taxonomy enums are translated to plain English at this boundary, not
+in the JSON artifact, so users can read the report without learning varix's
+vocabulary while machine consumers keep stable identifiers.
 """
 
 from __future__ import annotations
 
-from varix.analysis import ImpactEstimator, ImpactReport, Localizer
+from varix.analysis import ImpactBehavior, ImpactEstimator, ImpactReport, Localizer
 from varix.core import (
     Classification,
     Confidence,
@@ -42,9 +41,21 @@ _CONFIDENCE_LABELS: dict[Confidence, str] = {
     Confidence.UNAVAILABLE: "cannot verify",
 }
 
+_IMPACT_SUFFIX_LABELS: dict[ImpactBehavior, str] = {
+    ImpactBehavior.PROPAGATES: "changes the final output",
+    ImpactBehavior.ABSORBED: "absorbed before final output",
+}
+
 
 def _label_classification(c: Classification | None) -> str:
     return _CLASSIFICATION_LABELS[c] if c is not None else "unknown"
+
+
+def _paren_confidence(c: Confidence) -> str:
+    # "cannot verify" is already a verb phrase; the others need "confidence" appended.
+    if c is Confidence.UNAVAILABLE:
+        return _CONFIDENCE_LABELS[c]
+    return f"{_CONFIDENCE_LABELS[c]} confidence"
 
 
 def _headline(analysis: PipelineAnalysis, outcomes: dict[str, LocalizationOutcome]) -> str | None:
@@ -102,13 +113,12 @@ def render_analysis(analysis: PipelineAnalysis) -> str:
         line = f"step {sid}: {_LOCALIZATION_LABELS[outcome]}"
         if outcome is LocalizationOutcome.SOURCE:
             impact = estimator.estimate(analysis.runs, sid)
-            line += f" [{impact.behavior.value}]"
+            line += f" ({_IMPACT_SUFFIX_LABELS[impact.behavior]})"
         lines.append(line)
         for f in findings_by_step.get(sid, []):
             cat = _label_classification(f.classification)
-            conf = _CONFIDENCE_LABELS[f.confidence]
             reason = f.reason or ""
-            lines.append(f"  -> {cat} ({conf}): {reason}")
+            lines.append(f"  - {cat} ({_paren_confidence(f.confidence)}): {reason}")
 
     return "\n".join(lines)
 
@@ -135,7 +145,7 @@ def render_explain(analysis: PipelineAnalysis, step_id: str) -> str:
 
     for f in step_findings:
         cat = _label_classification(f.classification)
-        lines.append(f"{cat} ({_CONFIDENCE_LABELS[f.confidence]})")
+        lines.append(f"{cat} ({_paren_confidence(f.confidence)})")
         if f.reason:
             lines.append(f"  reason: {f.reason}")
         if f.evidence:
@@ -150,11 +160,7 @@ def render_explain(analysis: PipelineAnalysis, step_id: str) -> str:
 
 
 def render_impact(analysis: PipelineAnalysis, report: ImpactReport) -> str:
-    """Render an `ImpactReport` for a single source step.
-
-    ASCII-only, no trailing newline. Format mirrors `render_explain` for
-    consistency across CLI commands.
-    """
+    """Render an `ImpactReport` for a single source step. ASCII-only, no trailing newline."""
     lines: list[str] = []
     lines.append(f"=== impact {report.source_step_id} ===")
     lines.append(f"analysis_id: {analysis.analysis_id}")

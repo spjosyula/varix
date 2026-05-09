@@ -168,9 +168,8 @@ def test_run_report_appends_impact_suffix_for_source_step(tmp_path: Path) -> Non
         rng=SequenceRng(["id"]),
     )
     rendered = render_analysis(analysis)
-    # PROMPT_SIDE on s2 makes s2 a source step whose variance propagates
-    # through FakeAdapter's input-aware outputs.
-    assert "step s2: source of variance [propagates]" in rendered
+    # FakeAdapter's input-cascade makes s2's variance reach the final step.
+    assert "step s2: source of variance (changes the final output)" in rendered
 
 
 def test_run_report_omits_impact_suffix_for_deterministic_steps(tmp_path: Path) -> None:
@@ -184,9 +183,8 @@ def test_run_report_omits_impact_suffix_for_deterministic_steps(tmp_path: Path) 
         rng=SequenceRng(["id"]),
     )
     rendered = render_analysis(analysis)
-    # No source steps in deterministic run → no impact suffix.
-    assert "[propagates]" not in rendered
-    assert "[absorbed]" not in rendered
+    assert "changes the final output" not in rendered
+    assert "absorbed before final output" not in rendered
 
 
 # --- CLI command ------------------------------------------------------------

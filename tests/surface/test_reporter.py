@@ -102,7 +102,7 @@ def test_provider_side_scenario_renders_high_finding(tmp_path: Path) -> None:
     # PROVIDER_SIDE in FakeAdapter keeps output stable but flips fingerprints.
     # Localizer reads everything as DETERMINISTIC; classifier still emits HIGH.
     assert "step s2: deterministic" in report
-    assert "-> provider rolled the model (high):" in report
+    assert "- provider rolled the model (high confidence):" in report
     assert "system_fingerprint" in report
     # Output is stable (only fingerprint flips), so the headline says so.
     assert "verdict:     every run produced the same output." in report
@@ -121,7 +121,7 @@ def test_prompt_side_scenario_renders_medium_residual(tmp_path: Path) -> None:
     )
     report = render_analysis(analysis)
     assert "step s2: source of variance" in report
-    assert "-> sampling / temperature (medium):" in report
+    assert "- sampling / temperature (medium confidence):" in report
     assert "step s3: inherited from upstream" in report
     assert "step s5: inherited from upstream" in report
     assert "verdict:     1 step varies, and you get a different final output each run." in report
@@ -140,7 +140,7 @@ def test_time_or_state_scenario_renders_low_finding(tmp_path: Path) -> None:
     )
     report = render_analysis(analysis)
     assert "step s5: source of variance" in report
-    assert "-> clock or random source (low):" in report
+    assert "- clock or random source (low confidence):" in report
     assert "verdict:     1 step varies, and you get a different final output each run." in report
 
 
@@ -212,7 +212,7 @@ def test_headline_omitted_when_n_is_one(tmp_path: Path) -> None:
     )
     report = render_analysis(analysis)
     assert "verdict:" not in report
-    assert "WARNING:" in report  # commit 3's inconclusive note still surfaces
+    assert "WARNING:" in report
 
 
 def test_render_emits_warning_banner_when_notes_present() -> None:
