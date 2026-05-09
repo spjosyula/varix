@@ -103,7 +103,7 @@ def test_provider_side_scenario_renders_high_finding(tmp_path: Path) -> None:
     # PROVIDER_SIDE in FakeAdapter keeps output stable but flips fingerprints.
     # Localizer reads everything as DETERMINISTIC; classifier still emits HIGH.
     assert "step s2: deterministic" in report
-    assert "-> provider_side (high):" in report
+    assert "-> provider rolled the model (high):" in report
     assert "system_fingerprint" in report
     assert "1 finding(s), 0 source step(s)" in report
 
@@ -120,10 +120,10 @@ def test_prompt_side_scenario_renders_medium_residual(tmp_path: Path) -> None:
         rng=SequenceRng(["prompt-test-id"]),
     )
     report = render_analysis(analysis)
-    assert "step s2: source" in report
-    assert "-> prompt_side (medium):" in report
-    assert "step s3: downstream" in report
-    assert "step s5: downstream" in report
+    assert "step s2: source of variance" in report
+    assert "-> sampling / temperature (medium):" in report
+    assert "step s3: inherited from upstream" in report
+    assert "step s5: inherited from upstream" in report
     assert "1 finding(s), 1 source step(s)" in report
 
 
@@ -139,8 +139,8 @@ def test_time_or_state_scenario_renders_low_finding(tmp_path: Path) -> None:
         rng=SequenceRng(["time-test-id"]),
     )
     report = render_analysis(analysis)
-    assert "step s5: source" in report
-    assert "-> time_or_state (low):" in report
+    assert "step s5: source of variance" in report
+    assert "-> clock or random source (low):" in report
     assert "1 finding(s), 1 source step(s)" in report
 
 
@@ -269,5 +269,5 @@ def test_render_includes_unavailable_findings() -> None:
         total_cost=CostSnapshot(),
     )
     report = render_analysis(analysis)
-    assert "provider_side (unavailable):" in report
+    assert "provider rolled the model (cannot verify):" in report
     assert "adapter does not expose system_fingerprint" in report

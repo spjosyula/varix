@@ -144,7 +144,7 @@ def test_execute_explain_with_explicit_analysis_id(tmp_path: Path) -> None:
     save(_make_analysis("abc-123", with_finding=True), base_dir=tmp_path)
     rendered = execute_explain("s1", "abc-123", base_dir=tmp_path)
     assert "=== explain s1 ===" in rendered
-    assert "provider_side (high)" in rendered
+    assert "provider rolled the model (high)" in rendered
     assert "[fingerprint_diff]" in rendered
 
 
@@ -154,7 +154,7 @@ def test_execute_explain_falls_back_to_latest_when_no_target(tmp_path: Path) -> 
     save(_make_analysis("newer", with_finding=True), base_dir=tmp_path)
     rendered = execute_explain("s1", base_dir=tmp_path)
     assert "analysis_id: newer" in rendered
-    assert "provider_side (high)" in rendered
+    assert "provider rolled the model (high)" in rendered
 
 
 def test_execute_explain_no_saved_analyses_raises_file_not_found(tmp_path: Path) -> None:
@@ -210,5 +210,5 @@ def test_render_explain_with_multiple_findings_renders_each() -> None:
     )
     rendered = render_explain(analysis, "s1")
     assert "s1 has 2 finding(s):" in rendered
-    assert "provider_side (high)" in rendered
-    assert "prompt_side (medium)" in rendered
+    assert "provider rolled the model (high)" in rendered
+    assert "sampling / temperature (medium)" in rendered

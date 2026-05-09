@@ -170,7 +170,7 @@ def test_run_report_appends_impact_suffix_for_source_step(tmp_path: Path) -> Non
     rendered = render_analysis(analysis)
     # PROMPT_SIDE on s2 makes s2 a source step whose variance propagates
     # through FakeAdapter's input-aware outputs.
-    assert "step s2: source [propagates]" in rendered
+    assert "step s2: source of variance [propagates]" in rendered
 
 
 def test_run_report_omits_impact_suffix_for_deterministic_steps(tmp_path: Path) -> None:

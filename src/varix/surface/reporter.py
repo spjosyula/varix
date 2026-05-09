@@ -1,11 +1,50 @@
-"""Terminal reporter — renders a `PipelineAnalysis` as human-readable text."""
+"""Terminal reporter — renders a `PipelineAnalysis` as human-readable text.
+
+Internal taxonomy strings (`Classification.*.value`, `LocalizationOutcome.*.value`,
+`Confidence.UNAVAILABLE.value`) are translated to plain English at this boundary
+so the report is readable without learning varix's vocabulary. Internal names
+stay inside the artifact JSON.
+"""
 
 from __future__ import annotations
 
 from varix.analysis import ImpactEstimator, ImpactReport, Localizer
-from varix.core import ExactMatch, Finding, LocalizationOutcome, PipelineAnalysis
+from varix.core import (
+    Classification,
+    Confidence,
+    ExactMatch,
+    Finding,
+    LocalizationOutcome,
+    PipelineAnalysis,
+)
 
 __all__ = ["render_analysis", "render_explain", "render_impact"]
+
+
+_LOCALIZATION_LABELS: dict[LocalizationOutcome, str] = {
+    LocalizationOutcome.DETERMINISTIC: "deterministic",
+    LocalizationOutcome.SOURCE: "source of variance",
+    LocalizationOutcome.DOWNSTREAM: "inherited from upstream",
+}
+
+_CLASSIFICATION_LABELS: dict[Classification, str] = {
+    Classification.PROVIDER_SIDE: "provider rolled the model",
+    Classification.TOOL_SIDE: "tool returned different result",
+    Classification.ORDERING: "tools called in different order",
+    Classification.PROMPT_SIDE: "sampling / temperature",
+    Classification.TIME_OR_STATE: "clock or random source",
+}
+
+_CONFIDENCE_LABELS: dict[Confidence, str] = {
+    Confidence.HIGH: "high",
+    Confidence.MEDIUM: "medium",
+    Confidence.LOW: "low",
+    Confidence.UNAVAILABLE: "cannot verify",
+}
+
+
+def _label_classification(c: Classification | None) -> str:
+    return _CLASSIFICATION_LABELS[c] if c is not None else "unknown"
 
 
 def render_analysis(analysis: PipelineAnalysis) -> str:
@@ -36,14 +75,14 @@ def render_analysis(analysis: PipelineAnalysis) -> str:
 
     for sid in step_ids:
         outcome = outcomes.get(sid, LocalizationOutcome.DETERMINISTIC)
-        line = f"step {sid}: {outcome.value}"
+        line = f"step {sid}: {_LOCALIZATION_LABELS[outcome]}"
         if outcome is LocalizationOutcome.SOURCE:
             impact = estimator.estimate(analysis.runs, sid)
             line += f" [{impact.behavior.value}]"
         lines.append(line)
         for f in findings_by_step.get(sid, []):
-            cat = f.classification.value if f.classification is not None else "unknown"
-            conf = f.confidence.value
+            cat = _label_classification(f.classification)
+            conf = _CONFIDENCE_LABELS[f.confidence]
             reason = f.reason or ""
             lines.append(f"  -> {cat} ({conf}): {reason}")
 
@@ -76,8 +115,8 @@ def render_explain(analysis: PipelineAnalysis, step_id: str) -> str:
     lines.append("")
 
     for f in step_findings:
-        cat = f.classification.value if f.classification is not None else "unknown"
-        lines.append(f"{cat} ({f.confidence.value})")
+        cat = _label_classification(f.classification)
+        lines.append(f"{cat} ({_CONFIDENCE_LABELS[f.confidence]})")
         if f.reason:
             lines.append(f"  reason: {f.reason}")
         if f.evidence:
@@ -103,7 +142,7 @@ def render_impact(analysis: PipelineAnalysis, report: ImpactReport) -> str:
     lines.append(f"pipeline:    {analysis.pipeline_name}")
     lines.append("")
     lines.append(f"behavior:    {report.behavior.value}")
-    lines.append(f"confidence:  {report.confidence.value}")
+    lines.append(f"confidence:  {_CONFIDENCE_LABELS[report.confidence]}")
     lines.append(f"reason:      {report.reason}")
     if report.evidence:
         lines.append("")

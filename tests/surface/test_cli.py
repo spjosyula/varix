@@ -135,7 +135,7 @@ def test_explain_renders_evidence_for_step(tmp_path: Path, monkeypatch: pytest.M
     result = runner.invoke(app, ["explain", "s2"])
     assert result.exit_code == 0
     assert "=== explain s2 ===" in result.output
-    assert "provider_side (high)" in result.output
+    assert "provider rolled the model (high)" in result.output
     assert "evidence:" in result.output
     assert "fingerprint_diff" in result.output
 
