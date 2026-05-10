@@ -134,10 +134,9 @@ def test_explain_renders_evidence_for_step(tmp_path: Path, monkeypatch: pytest.M
     runner.invoke(app, ["run", str(agent), "--input", "hello", "-n", "3"])
     result = runner.invoke(app, ["explain", "s2"])
     assert result.exit_code == 0
-    assert "=== explain s2 ===" in result.output
-    assert "provider rolled the model (high confidence)" in result.output
-    assert "evidence:" in result.output
-    assert "fingerprint_diff" in result.output
+    assert "step `s2` was classified as provider-side variance, high confidence." in result.output
+    assert "system_fingerprint changed" in result.output
+    assert "varix impact s2" in result.output
 
 
 def test_explain_unknown_step_exits_one(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -142,9 +142,8 @@ def test_execute_show_round_trips_run_output(tmp_path: Path) -> None:
 def test_execute_explain_with_explicit_analysis_id(tmp_path: Path) -> None:
     save(_make_analysis("abc-123", with_finding=True), base_dir=tmp_path)
     rendered = execute_explain("s1", "abc-123", base_dir=tmp_path)
-    assert "=== explain s1 ===" in rendered
-    assert "provider rolled the model (high confidence)" in rendered
-    assert "[fingerprint_diff]" in rendered
+    assert "step `s1` was classified as provider-side variance, high confidence." in rendered
+    assert "system_fingerprint changed" in rendered
 
 
 def test_execute_explain_falls_back_to_latest_when_no_target(tmp_path: Path) -> None:
@@ -152,8 +151,8 @@ def test_execute_explain_falls_back_to_latest_when_no_target(tmp_path: Path) -> 
     time.sleep(0.02)
     save(_make_analysis("newer", with_finding=True), base_dir=tmp_path)
     rendered = execute_explain("s1", base_dir=tmp_path)
-    assert "analysis_id: newer" in rendered
-    assert "provider rolled the model (high confidence)" in rendered
+    assert "analysis: newer" in rendered
+    assert "step `s1` was classified as provider-side variance, high confidence." in rendered
 
 
 def test_execute_explain_no_saved_analyses_raises_file_not_found(tmp_path: Path) -> None:
@@ -173,19 +172,118 @@ def test_execute_explain_unknown_step_raises_value_error(tmp_path: Path) -> None
 def test_render_explain_step_with_no_findings_says_so() -> None:
     analysis = _make_analysis("abc")
     rendered = render_explain(analysis, "s1")
-    assert "s1 has no findings." in rendered
+    assert "step `s1` has no findings" in rendered
+    assert "deterministic across the runs" in rendered
 
 
-def test_render_explain_includes_evidence_kind_description_and_data() -> None:
+def test_render_explain_provider_side_renders_fingerprint_table() -> None:
     analysis = _make_analysis("abc", with_finding=True)
     rendered = render_explain(analysis, "s1")
-    assert "[fingerprint_diff]" in rendered
-    assert "system_fingerprint values observed across runs" in rendered
-    assert "fingerprints:" in rendered
-    assert "unique:" in rendered
+    assert "step `s1` was classified as provider-side variance, high confidence." in rendered
+    assert "system_fingerprint changed" in rendered
+    assert "fp_a   used in 1 run" in rendered
+    assert "fp_b   used in 1 run" in rendered
+    assert "different model infrastructure" in rendered
 
 
-def test_render_explain_with_multiple_findings_renders_each() -> None:
+def test_render_explain_prompt_side_renders_ruled_out_facts_and_outputs() -> None:
+    def _run(rid: str, output: str) -> PipelineRun:
+        return PipelineRun(
+            run_id=rid,
+            step_runs=(
+                StepRun(
+                    step_id="s1",
+                    inputs="i_const",
+                    output=output,
+                    provider_metadata={"system_fingerprint": "fp_a"},
+                ),
+            ),
+            started_at=_T,
+            finished_at=_T,
+        )
+
+    finding = Finding(
+        step_id="s1",
+        localization=LocalizationOutcome.SOURCE,
+        confidence=Confidence.MEDIUM,
+        metric_name="exact",
+        classification=Classification.PROMPT_SIDE,
+        reason="residual",
+    )
+    analysis = PipelineAnalysis(
+        analysis_id="prompt-id",
+        pipeline_name="fake",
+        n=3,
+        metric_name="exact",
+        schema_version=SCHEMA_VERSION,
+        runs=(_run("r1", "alpha output"), _run("r2", "beta output"), _run("r3", "gamma output")),
+        findings=(finding,),
+        started_at=_T,
+        finished_at=_T,
+        total_cost=CostSnapshot(),
+    )
+    rendered = render_explain(analysis, "s1")
+    assert "step `s1` was classified as prompt-side variance, medium confidence." in rendered
+    assert "provider fingerprints were stable (fp_a in all 3)" in rendered
+    assert "no tool calls were made" in rendered
+    assert "no time/state markers detected in outputs" in rendered
+    assert "the outputs themselves differed" in rendered
+    assert "The 3 runs varix observed:" in rendered
+    assert 'run 1: "alpha output"' in rendered
+    assert 'run 3: "gamma output"' in rendered
+
+
+def test_format_time_marker_handles_known_dict_shapes() -> None:
+    from varix.surface.reporter import _format_time_marker
+
+    assert (
+        _format_time_marker({"kind": "time_tool_name", "tools": ["get_current_time"]})
+        == "tool name(s) suggest clock or RNG: get_current_time"
+    )
+    assert (
+        _format_time_marker(
+            {"kind": "varying_timestamp_in_output", "timestamps": ["2026-05-10T12:00:00Z"]}
+        )
+        == "timestamps in output varied: 2026-05-10T12:00:00Z"
+    )
+    assert _format_time_marker("plain string") == "plain string"
+    assert _format_time_marker({"kind": "unknown"}) == "{'kind': 'unknown'}"
+
+
+def test_render_explain_unavailable_finding_says_could_not_classify() -> None:
+    pr = PipelineRun(
+        run_id="r1",
+        step_runs=(StepRun(step_id="s1", inputs="i", output="o"),),
+        started_at=_T,
+        finished_at=_T,
+    )
+    finding = Finding(
+        step_id="s1",
+        localization=LocalizationOutcome.SOURCE,
+        confidence=Confidence.UNAVAILABLE,
+        metric_name="exact",
+        classification=Classification.PROVIDER_SIDE,
+        reason="adapter does not expose system_fingerprint",
+    )
+    analysis = PipelineAnalysis(
+        analysis_id="unavail-id",
+        pipeline_name="fake",
+        n=2,
+        metric_name="exact",
+        schema_version=SCHEMA_VERSION,
+        runs=(pr, pr),
+        findings=(finding,),
+        started_at=_T,
+        finished_at=_T,
+        total_cost=CostSnapshot(),
+    )
+    rendered = render_explain(analysis, "s1")
+    assert "step `s1` was classified as provider-side variance, cannot verify." in rendered
+    assert "Why varix could not classify:" in rendered
+    assert "adapter does not expose system_fingerprint" in rendered
+
+
+def test_render_explain_with_multiple_findings_renders_each_block() -> None:
     base = _make_analysis("abc", with_finding=True)
     extra = Finding(
         step_id="s1",
@@ -208,6 +306,8 @@ def test_render_explain_with_multiple_findings_renders_each() -> None:
         total_cost=base.total_cost,
     )
     rendered = render_explain(analysis, "s1")
-    assert "s1 has 2 finding(s):" in rendered
-    assert "provider rolled the model (high confidence)" in rendered
-    assert "sampling / temperature (medium confidence)" in rendered
+    assert "provider-side variance, high confidence." in rendered
+    assert "prompt-side variance, medium confidence." in rendered
+    # HIGH-confidence block must come first under the sort.
+    assert rendered.index("provider-side variance") < rendered.index("prompt-side variance")
+    assert "---" in rendered  # divider between blocks

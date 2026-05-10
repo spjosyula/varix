@@ -8,6 +8,7 @@ vocabulary while machine consumers keep stable identifiers.
 from __future__ import annotations
 
 import os
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 
@@ -114,15 +115,6 @@ def _format_receipt(analysis: PipelineAnalysis) -> str:
     )
 
 
-# Long-form labels — used by render_explain / render_impact.
-_CLASSIFICATION_LABELS: dict[Classification, str] = {
-    Classification.PROVIDER_SIDE: "provider rolled the model",
-    Classification.TOOL_SIDE: "tool returned different result",
-    Classification.ORDERING: "tools called in different order",
-    Classification.PROMPT_SIDE: "sampling / temperature",
-    Classification.TIME_OR_STATE: "clock or random source",
-}
-
 # Short-form labels — used inline by render_analysis source lines.
 _CLASSIFICATION_SHORT: dict[Classification, str] = {
     Classification.PROVIDER_SIDE: "provider-side",
@@ -144,17 +136,6 @@ _IMPACT_SUFFIX_SHORT: dict[ImpactBehavior, str] = {
     ImpactBehavior.PROPAGATES: "propagates downstream",
     ImpactBehavior.ABSORBED: "absorbed downstream",
 }
-
-
-def _label_classification(c: Classification | None) -> str:
-    return _CLASSIFICATION_LABELS[c] if c is not None else "unknown"
-
-
-def _paren_confidence(c: Confidence) -> str:
-    # "cannot verify" is already a verb phrase; the others need "confidence" appended.
-    if c is Confidence.UNAVAILABLE:
-        return _CONFIDENCE_LABELS[c]
-    return f"{_CONFIDENCE_LABELS[c]} confidence"
 
 
 def _count_modal_final_output(
@@ -366,40 +347,283 @@ def render_analysis(analysis: PipelineAnalysis) -> str:
     return "\n".join(lines)
 
 
-def render_explain(analysis: PipelineAnalysis, step_id: str) -> str:
-    """Render the evidence trail for `step_id`'s findings from `analysis`.
+def _classification_long(c: Classification | None) -> str:
+    """Long-form name used in explain headlines ('provider-side variance', ...)."""
+    if c is None:
+        return "unclassified variance"
+    return f"{_CLASSIFICATION_SHORT[c]} variance"
 
-    Uses only `analysis.findings` and their `Evidence` records — no Localizer,
-    no classifier, no re-run. The artifact is the source of truth.
-    """
-    lines: list[str] = []
-    lines.append(f"=== explain {step_id} ===")
-    lines.append(f"analysis_id: {analysis.analysis_id}")
-    lines.append(f"pipeline:    {analysis.pipeline_name}")
-    lines.append("")
 
-    step_findings = [f for f in analysis.findings if f.step_id == step_id]
-    if not step_findings:
-        lines.append(f"{step_id} has no findings.")
-        return "\n".join(lines)
+def _confidence_phrase(c: Confidence) -> str:
+    """'high confidence' / 'medium confidence' / 'cannot verify'."""
+    if c is Confidence.UNAVAILABLE:
+        return _CONFIDENCE_LABELS[c]
+    return f"{_CONFIDENCE_LABELS[c]} confidence"
 
-    lines.append(f"{step_id} has {len(step_findings)} finding(s):")
-    lines.append("")
 
-    for f in step_findings:
-        cat = _label_classification(f.classification)
-        lines.append(f"{cat} ({_paren_confidence(f.confidence)})")
-        if f.reason:
-            lines.append(f"  reason: {f.reason}")
-        if f.evidence:
-            lines.append("  evidence:")
-            for ev in f.evidence:
-                lines.append(f"    [{ev.kind}] {ev.description}")
-                for k, v in ev.data.items():
-                    lines.append(f"      {k}: {v}")
+def _runs_word(n: int) -> str:
+    return "run" if n == 1 else "runs"
+
+
+def _explain_headline(finding: Finding, step_id: str) -> str:
+    return (
+        f"step `{step_id}` was classified as "
+        f"{_classification_long(finding.classification)}, "
+        f"{_confidence_phrase(finding.confidence)}."
+    )
+
+
+def _gather_step_observations(runs: Sequence[PipelineRun], step_id: str) -> list:
+    """Collect each run's StepRun matching step_id (first occurrence per run)."""
+    obs = []
+    for r in runs:
+        for sr in r.step_runs:
+            if sr.step_id == step_id:
+                obs.append(sr)
+                break
+    return obs
+
+
+def _explain_provider_side(finding: Finding, analysis: PipelineAnalysis, step_id: str) -> list[str]:
+    fingerprints: list[str] = []
+    for ev in finding.evidence:
+        if ev.kind == "fingerprint_diff":
+            fingerprints = [str(fp) for fp in ev.data.get("fingerprints", [])]
+            break
+    n_obs = len(fingerprints) if fingerprints else analysis.n
+    lines = [
+        _explain_headline(finding, step_id),
+        "",
+        "Why this classification:",
+        f"  Across {n_obs} {_runs_word(n_obs)} of `{step_id}`, system_fingerprint changed:",
+        "",
+    ]
+    if fingerprints:
+        counts = Counter(fingerprints)
+        # Stable ordering: most-frequent first, name asc as tiebreak.
+        for fp, count in sorted(counts.items(), key=lambda x: (-x[1], x[0])):
+            lines.append(f"    {fp}   used in {count} {_runs_word(count)}")
+    lines.extend([
+        "",
+        "  Different fingerprints mean the provider routed your requests to",
+        "  different model infrastructure. This is variance from the provider",
+        "  side - there is nothing in your pipeline causing it.",
+    ])
+    return lines
+
+
+def _explain_prompt_side(finding: Finding, analysis: PipelineAnalysis, step_id: str) -> list[str]:
+    obs = _gather_step_observations(analysis.runs, step_id)
+    n = analysis.n
+
+    fps = [(sr.provider_metadata or {}).get("system_fingerprint") for sr in obs]
+    fp_present = [str(fp) for fp in fps if fp is not None]
+    if fp_present and len(set(fp_present)) == 1:
+        fp_line = f"    - provider fingerprints were stable ({fp_present[0]} in all {len(fp_present)})"
+    else:
+        fp_line = "    - provider fingerprints were stable across runs"
+
+    total_tools = sum(len(sr.tool_calls) for sr in obs)
+    if total_tools == 0:
+        tool_line = "    - no tool calls were made"
+    else:
+        tool_line = f"    - {total_tools} tool call(s) observed, all matched across runs"
+
+    lines = [
+        _explain_headline(finding, step_id),
+        "",
+        "Why this classification:",
+        f"  Across {n} {_runs_word(n)} of `{step_id}` with identical inputs:",
+        fp_line,
+        tool_line,
+        "    - no time/state markers detected in outputs",
+        "    - the outputs themselves differed",
+        "",
+        "  When provider, tool, ordering, and time/state are ruled out, varix",
+        "  labels the residual variance as prompt-side. Medium confidence",
+        "  because it's a residual category - if a non-obvious variance source",
+        "  leaked through, varix would attribute it here.",
+    ]
+
+    if obs:
         lines.append("")
+        lines.append(f"The {len(obs)} {_runs_word(len(obs))} varix observed:")
+        for i, sr in enumerate(obs, 1):
+            lines.append(f'  run {i}: "{_truncate(str(sr.output))}"')
+    return lines
 
-    return "\n".join(lines).rstrip()
+
+def _explain_tool_side(finding: Finding, analysis: PipelineAnalysis, step_id: str) -> list[str]:
+    diffs: list[dict] = []
+    for ev in finding.evidence:
+        if ev.kind == "tool_result_diff":
+            diffs = list(ev.data.get("diffs", []))
+            break
+    n = analysis.n
+    lines = [
+        _explain_headline(finding, step_id),
+        "",
+        "Why this classification:",
+        f"  Across {n} {_runs_word(n)} of `{step_id}`, the same tool returned different results:",
+        "",
+    ]
+    for d in diffs:
+        tool = d.get("tool", "?")
+        unique_count = int(d.get("unique_count", 0))
+        plural = "s" if unique_count != 1 else ""
+        lines.append(f"    tool `{tool}`: {unique_count} distinct result{plural}")
+    lines.extend([
+        "",
+        "  varix paired tool calls by (name, arguments). Same input, different",
+        "  output - that's tool-side variance, originating outside your pipeline.",
+    ])
+    return lines
+
+
+def _explain_ordering(finding: Finding, analysis: PipelineAnalysis, step_id: str) -> list[str]:
+    sequences: list[str] = []
+    unique_count = 0
+    for ev in finding.evidence:
+        if ev.kind == "ordering_diff":
+            sequences = [str(s) for s in ev.data.get("sequences", [])]
+            unique_count = int(ev.data.get("unique_sequence_count", 0))
+            break
+    n = analysis.n
+    lines = [
+        _explain_headline(finding, step_id),
+        "",
+        "Why this classification:",
+        f"  Across {n} {_runs_word(n)} of `{step_id}`, the same set of tool calls",
+        f"  appeared in {unique_count} different sequences:",
+        "",
+    ]
+    for i, seq in enumerate(sequences, 1):
+        lines.append(f"    seq {i}: {seq}")
+    lines.extend([
+        "",
+        "  Same calls, same results, different order - the variance is in",
+        "  scheduling, not in the tools themselves.",
+    ])
+    return lines
+
+
+def _format_time_marker(marker: object) -> str:
+    """Turn a time_or_state_markers dict into a readable line.
+
+    Two known shapes from `analysis._helpers.time_or_state_markers`:
+      - {'kind': 'time_tool_name', 'tools': [...]}
+      - {'kind': 'varying_timestamp_in_output', 'timestamps': [...]}
+    Plain strings pass through; unknown shapes fall back to repr.
+    """
+    if isinstance(marker, str):
+        return marker
+    if isinstance(marker, dict):
+        kind = marker.get("kind")
+        if kind == "time_tool_name":
+            tools = ", ".join(str(t) for t in marker.get("tools", []))
+            return f"tool name(s) suggest clock or RNG: {tools}"
+        if kind == "varying_timestamp_in_output":
+            stamps = ", ".join(str(s) for s in marker.get("timestamps", []))
+            return f"timestamps in output varied: {stamps}"
+    return str(marker)
+
+
+def _explain_time_or_state(finding: Finding, analysis: PipelineAnalysis, step_id: str) -> list[str]:
+    markers: list[object] = []
+    for ev in finding.evidence:
+        if ev.kind == "time_or_state_markers":
+            markers = list(ev.data.get("markers", []))
+            break
+    n = analysis.n
+    lines = [
+        _explain_headline(finding, step_id),
+        "",
+        "Why this classification:",
+        f"  Across {n} {_runs_word(n)} of `{step_id}`, varix detected heuristic markers",
+        "  suggesting clock or RNG:",
+        "",
+    ]
+    for m in markers:
+        lines.append(f"    - {_format_time_marker(m)}")
+    lines.extend([
+        "",
+        "  This is a low-confidence heuristic - markers like tool names containing",
+        "  'time'/'rand' or ISO timestamps. Verify by inspecting the step's logic.",
+    ])
+    return lines
+
+
+def _explain_unavailable(finding: Finding, step_id: str) -> list[str]:
+    lines = [
+        _explain_headline(finding, step_id),
+        "",
+        "Why varix could not classify:",
+    ]
+    if finding.reason:
+        lines.append(f"  {finding.reason}")
+    if finding.classification is not None:
+        attempted = _CLASSIFICATION_SHORT[finding.classification]
+        lines.extend([
+            "",
+            f"  varix tried to verify {attempted} variance but the adapter",
+            "  doesn't expose the data needed. Expose the relevant capability",
+            "  on your adapter to enable this classification.",
+        ])
+    return lines
+
+
+def _explain_block(finding: Finding, analysis: PipelineAnalysis, step_id: str) -> list[str]:
+    """Per-finding prose body. UNAVAILABLE first; classification dispatch otherwise."""
+    if finding.confidence is Confidence.UNAVAILABLE:
+        return _explain_unavailable(finding, step_id)
+    if finding.classification is Classification.PROVIDER_SIDE:
+        return _explain_provider_side(finding, analysis, step_id)
+    if finding.classification is Classification.PROMPT_SIDE:
+        return _explain_prompt_side(finding, analysis, step_id)
+    if finding.classification is Classification.TOOL_SIDE:
+        return _explain_tool_side(finding, analysis, step_id)
+    if finding.classification is Classification.ORDERING:
+        return _explain_ordering(finding, analysis, step_id)
+    if finding.classification is Classification.TIME_OR_STATE:
+        return _explain_time_or_state(finding, analysis, step_id)
+    # Fallback for findings without a classification — should not normally occur.
+    out = [_explain_headline(finding, step_id)]
+    if finding.reason:
+        out.extend(["", f"Reason: {finding.reason}"])
+    return out
+
+
+def render_explain(analysis: PipelineAnalysis, step_id: str) -> str:
+    """Return a plain-text evidence trail for `step_id`. ASCII-only, no trailing newline.
+
+    Cases:
+      - No findings: short 'deterministic, nothing to explain' sentence.
+      - One finding: a single classification block followed by analysis + Next.
+      - Multiple findings: each block separated by '---', sorted HIGH→LOW confidence.
+    """
+    short_id = _short_id(analysis.analysis_id)
+    step_findings = [f for f in analysis.findings if f.step_id == step_id]
+
+    if not step_findings:
+        return (
+            f"step `{step_id}` has no findings - it was deterministic across "
+            f"the runs, so there is nothing to explain.\n"
+            f"\n"
+            f"analysis: {short_id}"
+        )
+
+    sorted_findings = sorted(step_findings, key=lambda f: _CONFIDENCE_ORDER[f.confidence])
+
+    lines: list[str] = []
+    for i, f in enumerate(sorted_findings):
+        if i > 0:
+            lines.extend(["", "---", ""])
+        lines.extend(_explain_block(f, analysis, step_id))
+
+    lines.extend(["", f"analysis: {short_id}", "", "Next:"])
+    cmd = f"varix impact {step_id}"
+    lines.append(f"  {cmd.ljust(len(cmd) + 6)}see how this changes your final output")
+    return "\n".join(lines)
 
 
 def render_impact(analysis: PipelineAnalysis, report: ImpactReport) -> str:
