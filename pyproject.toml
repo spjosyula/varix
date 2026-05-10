@@ -37,6 +37,9 @@ dev = [
     "mypy>=1.10",
     "ruff>=0.5",
 ]
+gemini = [
+    "google-genai>=1.0",
+]
 
 [tool.hatch.version]
 path = "src/varix/__init__.py"
@@ -81,3 +84,7 @@ strict = true
 files = ["src/varix"]
 warn_unused_ignores = true
 warn_redundant_casts = true
+
+[[tool.mypy.overrides]]
+module = ["google.*"]
+ignore_missing_imports = true
