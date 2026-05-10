@@ -119,9 +119,9 @@ def test_execute_show_newer_schema_raises_refusal(tmp_path: Path) -> None:
         execute_show("future", base_dir=tmp_path)
 
 
-def test_execute_show_round_trips_run_output(tmp_path: Path) -> None:
-    """varix run + varix show should render the same text."""
-    analysis, _ = execute_run(
+def test_execute_show_matches_run_output_apart_from_ran_x_ago_suffix(tmp_path: Path) -> None:
+    """show renders the same body as run, plus a 'ran X ago' suffix on the receipt."""
+    execute_run(
         pipeline="varix.adapters:FakeAdapter",
         input_text="hello",
         n=3,
@@ -130,10 +130,27 @@ def test_execute_show_round_trips_run_output(tmp_path: Path) -> None:
         rng=SequenceRng(["round-trip-id"]),
     )
     from varix.surface.reporter import render_analysis
+    from varix.surface.storage import load
 
-    fresh = render_analysis(analysis)
-    reloaded = execute_show("round-trip-id", base_dir=tmp_path)
-    assert fresh == reloaded
+    fresh = render_analysis(load("round-trip-id", base_dir=tmp_path))
+    reloaded = execute_show("round-trip-id", base_dir=tmp_path, clock=FrozenClock(_T))
+    assert fresh in reloaded
+    assert reloaded.endswith(" | ran just now")
+
+
+def test_execute_show_appends_ran_x_ago_relative_to_finished_at(tmp_path: Path) -> None:
+    from datetime import timedelta
+
+    execute_run(
+        pipeline="varix.adapters:FakeAdapter",
+        input_text="hello",
+        n=3,
+        base_dir=tmp_path,
+        clock=FrozenClock(_T),
+        rng=SequenceRng(["aged-id"]),
+    )
+    rendered = execute_show("aged-id", base_dir=tmp_path, clock=FrozenClock(_T + timedelta(hours=2)))
+    assert "ran 2 hours ago" in rendered
 
 
 # --- execute_explain -----------------------------------------------------------

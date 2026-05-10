@@ -106,13 +106,20 @@ def _rank_source_step_ids(
     return propagates + absorbed
 
 
-def _format_receipt(analysis: PipelineAnalysis) -> str:
-    """Single-line receipt: 'n=3 | $0.0007 | 14s | analysis abc12345'."""
+def _format_receipt(analysis: PipelineAnalysis, now: datetime | None = None) -> str:
+    """Single-line receipt: 'n=3 | $0.0007 | 14s | analysis abc12345'.
+
+    When `now` is given, append ' | ran <relative-time>' — used by `varix show`
+    to give the engineer temporal context when re-reading a past analysis.
+    """
     duration = _format_duration(analysis.started_at, analysis.finished_at)
-    return (
+    line = (
         f"n={analysis.n} | ${analysis.total_cost.dollars:.4f} | "
         f"{duration} | analysis {_short_id(analysis.analysis_id)}"
     )
+    if now is not None:
+        line += f" | ran {_format_relative_time(analysis.finished_at, now)}"
+    return line
 
 
 # Short-form labels — used inline by render_analysis source lines.
@@ -281,7 +288,7 @@ def _render_next_block(
     return out
 
 
-def render_analysis(analysis: PipelineAnalysis) -> str:
+def render_analysis(analysis: PipelineAnalysis, now: datetime | None = None) -> str:
     """Return a plain-text report for `analysis`. ASCII-only, no trailing newline.
 
     Four cases:
@@ -290,6 +297,9 @@ def render_analysis(analysis: PipelineAnalysis) -> str:
       3. n>=2, no sources but HIGH-confidence env findings: 'outputs stable but
          routing varied' + finding detail + receipt + Next.
       4. n>=2, has sources: 'Found N sources' + ranked source lines + receipt + Next.
+
+    When `now` is given, the receipt grows a ' | ran <relative-time>' suffix.
+    `varix show` passes the wall-clock current time; `varix run` does not.
     """
     outcomes = Localizer(metric=ExactMatch()).classify_steps(analysis.runs)
     step_ids = [sr.step_id for sr in analysis.runs[0].step_runs] if analysis.runs else []
@@ -302,7 +312,7 @@ def render_analysis(analysis: PipelineAnalysis) -> str:
     lines: list[str] = []
     lines.extend(_render_warning_block(analysis.notes))
     if analysis.n < 2:
-        lines.append(_format_receipt(analysis))
+        lines.append(_format_receipt(analysis, now=now))
         return "\n".join(lines)
 
     sources = _rank_source_step_ids(analysis.runs, outcomes, step_ids)
@@ -317,7 +327,7 @@ def render_analysis(analysis: PipelineAnalysis) -> str:
         lines.append("")
         lines.extend(_render_source_lines(sources, impacts, findings_by_step))
         lines.append("")
-        lines.append(_format_receipt(analysis))
+        lines.append(_format_receipt(analysis, now=now))
         lines.append("")
         lines.extend(_render_next_block(sources, impacts))
         return "\n".join(lines)
@@ -334,7 +344,7 @@ def render_analysis(analysis: PipelineAnalysis) -> str:
         lines.append("  your requests to different model infrastructure. Future runs may")
         lines.append("  behave differently.")
         lines.append("")
-        lines.append(_format_receipt(analysis))
+        lines.append(_format_receipt(analysis, now=now))
         lines.append("")
         lines.append("Next:")
         for f in env_findings:
@@ -343,7 +353,7 @@ def render_analysis(analysis: PipelineAnalysis) -> str:
         return "\n".join(lines)
     lines.append(f"No nondeterminism found in {pipeline_label}.")
     lines.append("")
-    lines.append(_format_receipt(analysis))
+    lines.append(_format_receipt(analysis, now=now))
     return "\n".join(lines)
 
 
@@ -419,7 +429,10 @@ def _explain_prompt_side(finding: Finding, analysis: PipelineAnalysis, step_id: 
     fps = [(sr.provider_metadata or {}).get("system_fingerprint") for sr in obs]
     fp_present = [str(fp) for fp in fps if fp is not None]
     if fp_present and len(set(fp_present)) == 1:
-        fp_line = f"    - provider fingerprints were stable ({fp_present[0]} in all {len(fp_present)})"
+        fp_line = (
+            f"    - provider fingerprints were stable ({fp_present[0]} "
+            f"in all {len(fp_present)})"
+        )
     else:
         fp_line = "    - provider fingerprints were stable across runs"
 

@@ -104,10 +104,21 @@ def resolve_runs_dir(explicit: Path | None) -> Path | None:
     return Path(env).expanduser() if env else None
 
 
-def execute_show(target: str, *, base_dir: Path | None = None) -> str:
-    """Load an artifact (by ID or path) and return the rendered analysis text."""
+def execute_show(
+    target: str,
+    *,
+    base_dir: Path | None = None,
+    clock: Clock | None = None,
+) -> str:
+    """Load an artifact (by ID or path) and return the rendered analysis text.
+
+    The receipt grows a 'ran <relative-time>' suffix derived from `clock.now()`
+    versus the artifact's `finished_at`, so the engineer has temporal context
+    when re-reading a past run.
+    """
     analysis = _load_target(target, base_dir)
-    return render_analysis(analysis)
+    actual_clock = clock if clock is not None else SystemClock()
+    return render_analysis(analysis, now=actual_clock.now())
 
 
 def execute_explain(
