@@ -96,14 +96,13 @@ def test_latest_analysis_returns_most_recent_mtime(tmp_path: Path) -> None:
 def test_execute_show_by_id_returns_rendered_text(tmp_path: Path) -> None:
     save(_make_analysis("abc-123"), base_dir=tmp_path)
     rendered = execute_show("abc-123", base_dir=tmp_path)
-    assert "=== varix analysis ===" in rendered
-    assert "analysis_id: abc-123" in rendered
+    assert "analysis abc-123" in rendered
 
 
 def test_execute_show_by_path_returns_rendered_text(tmp_path: Path) -> None:
     path = save(_make_analysis("abc-123"), base_dir=tmp_path)
     rendered = execute_show(str(path))
-    assert "analysis_id: abc-123" in rendered
+    assert "analysis abc-123" in rendered
 
 
 def test_execute_show_unknown_id_raises_file_not_found(tmp_path: Path) -> None:

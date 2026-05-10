@@ -29,48 +29,67 @@ def _execute(pipeline_target: str, tmp_path: Path) -> str:
     return render_analysis(analysis)
 
 
-def test_report_header_lists_required_fields(tmp_path: Path) -> None:
+def test_report_receipt_line_has_n_cost_duration_short_id(tmp_path: Path) -> None:
     report = _execute("varix.adapters:FakeAdapter", tmp_path)
-    assert "=== varix analysis ===" in report
-    assert "pipeline:" in report
-    assert "analysis_id: golden-test-id" in report
-    assert "n:           3" in report
-    assert "metric:      exact" in report
-    assert "cost:" in report
+    assert "No nondeterminism found in varix.adapters:FakeAdapter." in report
+    assert "n=3" in report
+    assert "$0.0000" in report
+    assert "0.0s" in report
+    assert "analysis golden-t" in report
 
 
-def test_deterministic_report_shows_no_findings(tmp_path: Path) -> None:
+def test_deterministic_report_shows_no_source_lines(tmp_path: Path) -> None:
     report = _execute("varix.adapters:FakeAdapter", tmp_path)
-    assert "verdict:     every run produced the same output." in report
-    assert "step s1: deterministic" in report
-    assert "step s2: deterministic" in report
-    assert "step s5: deterministic" in report
+    assert "No nondeterminism found in varix.adapters:FakeAdapter." in report
+    assert "step `s" not in report
+    assert "Next:" not in report
 
 
-def test_step_order_matches_pipeline_order(tmp_path: Path) -> None:
-    report = _execute("varix.adapters:FakeAdapter", tmp_path)
-    s1 = report.index("step s1:")
-    s2 = report.index("step s2:")
-    s5 = report.index("step s5:")
-    assert s1 < s2 < s5
+def test_source_lines_ranked_propagates_before_absorbed() -> None:
+    from varix.core import (
+        SCHEMA_VERSION,
+        CostSnapshot,
+        PipelineAnalysis,
+        PipelineRun,
+        StepRun,
+    )
+
+    def _run(run_id: str, a_out: str, c_out: str) -> PipelineRun:
+        return PipelineRun(
+            run_id=run_id,
+            step_runs=(
+                StepRun(step_id="a", inputs="in_a", output=a_out),
+                StepRun(step_id="b", inputs="in_b", output="b_const"),
+                StepRun(step_id="c", inputs="in_c", output=c_out),
+            ),
+            started_at=_FROZEN,
+            finished_at=_FROZEN,
+        )
+
+    analysis = PipelineAnalysis(
+        analysis_id="rank-id",
+        pipeline_name="manual",
+        n=2,
+        metric_name="exact",
+        schema_version=SCHEMA_VERSION,
+        runs=(_run("r1", "a1", "c1"), _run("r2", "a2", "c2")),
+        findings=(),
+        started_at=_FROZEN,
+        finished_at=_FROZEN,
+        total_cost=CostSnapshot(),
+    )
+    report = render_analysis(analysis)
+    a_at = report.index("`a`")
+    c_at = report.index("`c`")
+    assert a_at < c_at
 
 
 def test_deterministic_report_byte_for_byte_golden(tmp_path: Path) -> None:
     report = _execute("varix.adapters:FakeAdapter", tmp_path)
     expected = (
-        "=== varix analysis ===\n"
-        "pipeline:    varix.adapters:FakeAdapter\n"
-        "analysis_id: golden-test-id\n"
-        "n:           3\n"
-        "metric:      exact\n"
-        "cost:        $0.0000\n"
-        "verdict:     every run produced the same output.\n"
+        "No nondeterminism found in varix.adapters:FakeAdapter.\n"
         "\n"
-        "step s1: deterministic\n"
-        "step s2: deterministic\n"
-        "step s3: deterministic\n"
-        "step s4: deterministic\n"
-        "step s5: deterministic"
+        "n=3 | $0.0000 | 0.0s | analysis golden-t"
     )
     assert report == expected
 
@@ -87,7 +106,7 @@ def _adapter_file(tmp_path: Path, variance_kw: str) -> Path:
     return path
 
 
-def test_provider_side_scenario_renders_high_finding(tmp_path: Path) -> None:
+def test_provider_side_stable_output_renders_environmental_signal(tmp_path: Path) -> None:
     agent = _adapter_file(tmp_path, "{'s2': Classification.PROVIDER_SIDE}")
     runs_dir = tmp_path / "runs"
     analysis, _ = execute_run(
@@ -99,16 +118,14 @@ def test_provider_side_scenario_renders_high_finding(tmp_path: Path) -> None:
         rng=SequenceRng(["provider-test-id"]),
     )
     report = render_analysis(analysis)
-    # PROVIDER_SIDE in FakeAdapter keeps output stable but flips fingerprints.
-    # Localizer reads everything as DETERMINISTIC; classifier still emits HIGH.
-    assert "step s2: deterministic" in report
-    assert "- provider rolled the model (high confidence):" in report
-    assert "system_fingerprint" in report
-    # Output is stable (only fingerprint flips), so the headline says so.
-    assert "verdict:     every run produced the same output." in report
+    assert "Your pipeline's outputs were stable across 3 runs." in report
+    assert "step `s2`  ->  fingerprint changed" in report
+    assert "different model infrastructure" in report
+    assert "varix explain s2" in report
+    assert "No nondeterminism found" not in report
 
 
-def test_prompt_side_scenario_renders_medium_residual(tmp_path: Path) -> None:
+def test_prompt_side_scenario_renders_source_line(tmp_path: Path) -> None:
     agent = _adapter_file(tmp_path, "{'s2': Classification.PROMPT_SIDE}")
     runs_dir = tmp_path / "runs"
     analysis, _ = execute_run(
@@ -120,14 +137,15 @@ def test_prompt_side_scenario_renders_medium_residual(tmp_path: Path) -> None:
         rng=SequenceRng(["prompt-test-id"]),
     )
     report = render_analysis(analysis)
-    assert "step s2: source of variance" in report
-    assert "- sampling / temperature (medium confidence):" in report
-    assert "step s3: inherited from upstream" in report
-    assert "step s5: inherited from upstream" in report
-    assert "verdict:     1 step varies, and you get a different final output each run." in report
+    assert "Found 1 source of nondeterminism" in report
+    assert "step `s2`  ->  prompt-side, propagates downstream" in report
+    assert "step `s3`" not in report
+    assert "step `s5`" not in report
+    assert "varix impact s2" in report
+    assert "varix explain s2" in report
 
 
-def test_time_or_state_scenario_renders_low_finding(tmp_path: Path) -> None:
+def test_time_or_state_scenario_renders_source_line(tmp_path: Path) -> None:
     agent = _adapter_file(tmp_path, "{'s5': Classification.TIME_OR_STATE}")
     runs_dir = tmp_path / "runs"
     analysis, _ = execute_run(
@@ -139,9 +157,9 @@ def test_time_or_state_scenario_renders_low_finding(tmp_path: Path) -> None:
         rng=SequenceRng(["time-test-id"]),
     )
     report = render_analysis(analysis)
-    assert "step s5: source of variance" in report
-    assert "- clock or random source (low confidence):" in report
-    assert "verdict:     1 step varies, and you get a different final output each run." in report
+    assert "Found 1 source of nondeterminism" in report
+    # s5 is the final step → ABSORBED special case in ImpactEstimator.
+    assert "step `s5`  ->  time/state, absorbed downstream" in report
 
 
 @pytest.mark.parametrize("scenario", ["PROVIDER_SIDE", "TOOL_SIDE", "ORDERING"])
@@ -197,7 +215,7 @@ def test_headline_pluralizes_for_multiple_source_steps() -> None:
         total_cost=CostSnapshot(),
     )
     report = render_analysis(analysis)
-    assert "verdict:     2 steps vary, and you get a different final output each run." in report
+    assert "Found 2 sources of nondeterminism in manual." in report
 
 
 def test_headline_omitted_when_n_is_one(tmp_path: Path) -> None:
@@ -246,10 +264,9 @@ def test_render_emits_warning_banner_when_notes_present() -> None:
     report = render_analysis(analysis)
     assert "WARNING:" in report
     assert "provider stalled" in report
-    # Banner sits between the header block and the per-step lines.
     warn_at = report.index("WARNING:")
-    step_at = report.index("step s1:")
-    assert warn_at < step_at
+    receipt_at = report.index("n=1 |")
+    assert warn_at < receipt_at
 
 
 def test_render_clean_analysis_has_no_warning_section() -> None:
@@ -470,8 +487,7 @@ def test_format_receipt_assembles_n_cost_duration_short_id() -> None:
     assert _format_receipt(analysis) == "n=3 | $0.0007 | 14s | analysis abc12345"
 
 
-def test_render_includes_unavailable_findings() -> None:
-    """Regression: UNAVAILABLE findings (from missing capability) survive into the report."""
+def test_render_source_step_with_unavailable_finding_says_cannot_verify() -> None:
     from varix.core import (
         SCHEMA_VERSION,
         Classification,
@@ -485,10 +501,14 @@ def test_render_includes_unavailable_findings() -> None:
     )
     from varix.surface.reporter import render_analysis
 
-    step_run = StepRun(step_id="s1", inputs="i", output="o")
-    pipeline_run = PipelineRun(
-        run_id="r1", step_runs=(step_run,), started_at=_FROZEN, finished_at=_FROZEN
-    )
+    def _run(run_id: str, output: str) -> PipelineRun:
+        return PipelineRun(
+            run_id=run_id,
+            step_runs=(StepRun(step_id="s1", inputs="i_const", output=output),),
+            started_at=_FROZEN,
+            finished_at=_FROZEN,
+        )
+
     finding = Finding(
         step_id="s1",
         localization=LocalizationOutcome.SOURCE,
@@ -500,15 +520,16 @@ def test_render_includes_unavailable_findings() -> None:
     analysis = PipelineAnalysis(
         analysis_id="unavailable-test",
         pipeline_name="fake",
-        n=1,
+        n=2,
         metric_name="exact",
         schema_version=SCHEMA_VERSION,
-        runs=(pipeline_run,),
+        runs=(_run("r1", "o1"), _run("r2", "o2")),
         findings=(finding,),
         started_at=_FROZEN,
         finished_at=_FROZEN,
         total_cost=CostSnapshot(),
     )
     report = render_analysis(analysis)
-    assert "provider rolled the model (cannot verify):" in report
-    assert "adapter does not expose system_fingerprint" in report
+    assert "step `s1`" in report
+    assert "cannot verify" in report
+    assert "provider-side, propagates" not in report

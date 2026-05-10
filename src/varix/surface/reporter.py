@@ -102,18 +102,22 @@ def _format_receipt(analysis: PipelineAnalysis) -> str:
     )
 
 
-_LOCALIZATION_LABELS: dict[LocalizationOutcome, str] = {
-    LocalizationOutcome.DETERMINISTIC: "deterministic",
-    LocalizationOutcome.SOURCE: "source of variance",
-    LocalizationOutcome.DOWNSTREAM: "inherited from upstream",
-}
-
+# Long-form labels — used by render_explain / render_impact.
 _CLASSIFICATION_LABELS: dict[Classification, str] = {
     Classification.PROVIDER_SIDE: "provider rolled the model",
     Classification.TOOL_SIDE: "tool returned different result",
     Classification.ORDERING: "tools called in different order",
     Classification.PROMPT_SIDE: "sampling / temperature",
     Classification.TIME_OR_STATE: "clock or random source",
+}
+
+# Short-form labels — used inline by render_analysis source lines.
+_CLASSIFICATION_SHORT: dict[Classification, str] = {
+    Classification.PROVIDER_SIDE: "provider-side",
+    Classification.TOOL_SIDE: "tool-side",
+    Classification.ORDERING: "ordering",
+    Classification.PROMPT_SIDE: "prompt-side",
+    Classification.TIME_OR_STATE: "time/state",
 }
 
 _CONFIDENCE_LABELS: dict[Confidence, str] = {
@@ -123,9 +127,10 @@ _CONFIDENCE_LABELS: dict[Confidence, str] = {
     Confidence.UNAVAILABLE: "cannot verify",
 }
 
-_IMPACT_SUFFIX_LABELS: dict[ImpactBehavior, str] = {
-    ImpactBehavior.PROPAGATES: "changes the final output",
-    ImpactBehavior.ABSORBED: "absorbed before final output",
+# Inline impact suffix used in source-step lines.
+_IMPACT_SUFFIX_SHORT: dict[ImpactBehavior, str] = {
+    ImpactBehavior.PROPAGATES: "propagates downstream",
+    ImpactBehavior.ABSORBED: "absorbed downstream",
 }
 
 
@@ -150,68 +155,174 @@ def _impact_verdict(report: ImpactReport) -> str:
     return f"{sid}'s variance is absorbed before the final output ({conf})."
 
 
-def _headline(analysis: PipelineAnalysis, outcomes: dict[str, LocalizationOutcome]) -> str | None:
-    """One-sentence verdict in plain English, or None when inconclusive (n<2)."""
-    if analysis.n < 2:
-        return None  # WARNING banner already explains the inconclusive case
+# Confidence ranking — used to pick the primary finding when a step has several.
+_CONFIDENCE_ORDER: dict[Confidence, int] = {
+    Confidence.HIGH: 0,
+    Confidence.MEDIUM: 1,
+    Confidence.LOW: 2,
+    Confidence.UNAVAILABLE: 3,
+}
 
-    n_sources = sum(1 for o in outcomes.values() if o is LocalizationOutcome.SOURCE)
-    if n_sources == 0:
-        return "every run produced the same output."
 
-    final_step_id = analysis.runs[0].step_runs[-1].step_id if analysis.runs else None
-    final_outcome = outcomes.get(final_step_id) if final_step_id is not None else None
-    final_varies = (
-        final_outcome is not None and final_outcome is not LocalizationOutcome.DETERMINISTIC
-    )
+def _classification_short(c: Classification | None) -> str:
+    """Short hyphenated label for a classification ('prompt-side', 'provider-side', ...)."""
+    return _CLASSIFICATION_SHORT[c] if c is not None else "unclassified"
 
-    subj = "1 step varies" if n_sources == 1 else f"{n_sources} steps vary"
-    if final_varies:
-        return f"{subj}, and you get a different final output each run."
-    return f"{subj}, but the final output is the same every run."
+
+def _primary_finding(findings: list[Finding]) -> Finding | None:
+    """Pick the highest-confidence finding for a step; tiebreak by classifier order."""
+    if not findings:
+        return None
+    return min(findings, key=lambda f: _CONFIDENCE_ORDER[f.confidence])
+
+
+def _environmental_findings(
+    outcomes: Mapping[str, LocalizationOutcome],
+    findings: Sequence[Finding],
+) -> list[Finding]:
+    """HIGH-confidence findings on DETERMINISTIC steps — variance varix saw but outputs absorbed."""
+    return [
+        f
+        for f in findings
+        if f.confidence is Confidence.HIGH
+        and outcomes.get(f.step_id) is LocalizationOutcome.DETERMINISTIC
+    ]
+
+
+def _env_finding_detail(finding: Finding) -> str:
+    """One-line inline detail for an environmental finding (currently provider-side only)."""
+    if finding.classification is Classification.PROVIDER_SIDE:
+        for ev in finding.evidence:
+            if ev.kind == "fingerprint_diff":
+                unique = [str(u) for u in ev.data.get("unique", [])]
+                if len(unique) == 2:
+                    return f"fingerprint changed ({unique[0]} -> {unique[1]})"
+                if unique:
+                    return f"fingerprint changed ({', '.join(unique)})"
+        return "fingerprint changed"
+    return _classification_short(finding.classification)
+
+
+def _render_warning_block(notes: Sequence[str]) -> list[str]:
+    """WARNING banner shown above the headline. Empty when no notes."""
+    if not notes:
+        return []
+    lines = ["WARNING:"]
+    for note in notes:
+        lines.append(f"  {note}")
+    lines.append("")
+    return lines
+
+
+def _render_source_lines(
+    sources: list[str],
+    impacts: dict[str, ImpactBehavior],
+    findings_by_step: dict[str, list[Finding]],
+) -> list[str]:
+    """Indented per-source lines: '  step `<id>`  ->  <classification>, <impact>'."""
+    if not sources:
+        return []
+    pad = max(len(sid) for sid in sources)
+    out: list[str] = []
+    for sid in sources:
+        primary = _primary_finding(findings_by_step.get(sid, []))
+        if primary is None:
+            class_label = "unclassified"
+        elif primary.confidence is Confidence.UNAVAILABLE:
+            class_label = "unclassified (cannot verify)"
+        else:
+            class_label = _classification_short(primary.classification)
+        impact_label = _IMPACT_SUFFIX_SHORT[impacts[sid]]
+        padded_id = f"`{sid}`".ljust(pad + 2)
+        out.append(f"  step {padded_id}  ->  {class_label}, {impact_label}")
+    return out
+
+
+def _render_next_block(
+    sources: list[str],
+    impacts: dict[str, ImpactBehavior],
+) -> list[str]:
+    """`Next:` block: educational descriptions for single source, bare commands for many."""
+    if not sources:
+        return []
+    out = ["Next:"]
+    if len(sources) == 1:
+        sid = sources[0]
+        impact_cmd = f"varix impact {sid}"
+        explain_cmd = f"varix explain {sid}"
+        pad = max(len(impact_cmd), len(explain_cmd)) + 4
+        out.append(f"  {impact_cmd.ljust(pad)}see how much this changes your output")
+        out.append(f"  {explain_cmd.ljust(pad)}see the evidence varix used")
+        return out
+    # Multi-source: one line per source, choose verb by impact.
+    for sid in sources:
+        verb = "impact" if impacts[sid] is ImpactBehavior.PROPAGATES else "explain"
+        out.append(f"  varix {verb} {sid}")
+    return out
 
 
 def render_analysis(analysis: PipelineAnalysis) -> str:
-    """Return a plain-text report for `analysis`. ASCII-only, no trailing newline."""
+    """Return a plain-text report for `analysis`. ASCII-only, no trailing newline.
+
+    Four cases:
+      1. n<2: inconclusive — WARNING banner + receipt.
+      2. n>=2, no sources, no env findings: 'No nondeterminism found' + receipt.
+      3. n>=2, no sources but HIGH-confidence env findings: 'outputs stable but
+         routing varied' + finding detail + receipt + Next.
+      4. n>=2, has sources: 'Found N sources' + ranked source lines + receipt + Next.
+    """
     outcomes = Localizer(metric=ExactMatch()).classify_steps(analysis.runs)
-
-    lines: list[str] = []
-    lines.append("=== varix analysis ===")
-    lines.append(f"pipeline:    {analysis.pipeline_name}")
-    lines.append(f"analysis_id: {analysis.analysis_id}")
-    lines.append(f"n:           {analysis.n}")
-    lines.append(f"metric:      {analysis.metric_name}")
-    lines.append(f"cost:        ${analysis.total_cost.dollars:.4f}")
-    headline = _headline(analysis, outcomes)
-    if headline is not None:
-        lines.append(f"verdict:     {headline}")
-    lines.append("")
-
-    if analysis.notes:
-        lines.append("WARNING:")
-        for note in analysis.notes:
-            lines.append(f"  {note}")
-        lines.append("")
+    step_ids = [sr.step_id for sr in analysis.runs[0].step_runs] if analysis.runs else []
 
     findings_by_step: dict[str, list[Finding]] = {}
-    for finding in analysis.findings:
-        findings_by_step.setdefault(finding.step_id, []).append(finding)
+    for f in analysis.findings:
+        findings_by_step.setdefault(f.step_id, []).append(f)
 
-    step_ids = [sr.step_id for sr in analysis.runs[0].step_runs] if analysis.runs else []
+    lines: list[str] = []
+    lines.extend(_render_warning_block(analysis.notes))
+    if analysis.n < 2:
+        lines.append(_format_receipt(analysis))
+        return "\n".join(lines)
+
+    sources = _rank_source_step_ids(analysis.runs, outcomes, step_ids)
     estimator = ImpactEstimator()
+    impacts = {sid: estimator.estimate(analysis.runs, sid).behavior for sid in sources}
 
-    for sid in step_ids:
-        outcome = outcomes.get(sid, LocalizationOutcome.DETERMINISTIC)
-        line = f"step {sid}: {_LOCALIZATION_LABELS[outcome]}"
-        if outcome is LocalizationOutcome.SOURCE:
-            impact = estimator.estimate(analysis.runs, sid)
-            line += f" ({_IMPACT_SUFFIX_LABELS[impact.behavior]})"
-        lines.append(line)
-        for f in findings_by_step.get(sid, []):
-            cat = _label_classification(f.classification)
-            reason = f.reason or ""
-            lines.append(f"  - {cat} ({_paren_confidence(f.confidence)}): {reason}")
+    if sources:
+        plural = "s" if len(sources) != 1 else ""
+        lines.append(
+            f"Found {len(sources)} source{plural} of nondeterminism in {analysis.pipeline_name}."
+        )
+        lines.append("")
+        lines.extend(_render_source_lines(sources, impacts, findings_by_step))
+        lines.append("")
+        lines.append(_format_receipt(analysis))
+        lines.append("")
+        lines.extend(_render_next_block(sources, impacts))
+        return "\n".join(lines)
 
+    env_findings = _environmental_findings(outcomes, analysis.findings)
+    if env_findings:
+        lines.append(f"Your pipeline's outputs were stable across {analysis.n} runs.")
+        lines.append("")
+        lines.append("  varix did detect provider routing changes during the runs:")
+        for f in env_findings:
+            lines.append(f"    step `{f.step_id}`  ->  {_env_finding_detail(f)}")
+        lines.append("")
+        lines.append("  This didn't affect your output - but it means the provider routed")
+        lines.append("  your requests to different model infrastructure. Future runs may")
+        lines.append("  behave differently.")
+        lines.append("")
+        lines.append(_format_receipt(analysis))
+        lines.append("")
+        lines.append("Next:")
+        for f in env_findings:
+            cmd = f"varix explain {f.step_id}"
+            lines.append(f"  {cmd.ljust(len(cmd) + 6)}see the fingerprint evidence")
+        return "\n".join(lines)
+    lines.append(f"No nondeterminism found in {analysis.pipeline_name}.")
+    lines.append("")
+    lines.append(_format_receipt(analysis))
     return "\n".join(lines)
 
 

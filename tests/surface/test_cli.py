@@ -69,10 +69,10 @@ def test_run_prints_artifact_path_and_id(tmp_path: Path, monkeypatch: pytest.Mon
     monkeypatch.setenv("VARIX_RUNS_DIR", str(tmp_path))
     result = runner.invoke(app, ["run", "varix.adapters:FakeAdapter", "--input", "hello"])
     assert result.exit_code == 0
-    assert "=== varix analysis ===" in result.output  # rendered report
+    assert "No nondeterminism found in varix.adapters:FakeAdapter." in result.output
+    assert "n=3" in result.output
+    assert "analysis " in result.output
     assert "wrote" in result.output
-    assert "analysis_id:" in result.output
-    assert "n:           3" in result.output  # default n=3
 
 
 def test_run_resolution_failure_exits_one_with_message(
@@ -111,8 +111,8 @@ def test_show_renders_saved_analysis(tmp_path: Path, monkeypatch: pytest.MonkeyP
     artifact = next(tmp_path.glob("*.json"))
     result = runner.invoke(app, ["show", artifact.stem])
     assert result.exit_code == 0
-    assert "=== varix analysis ===" in result.output
-    assert "step s1: deterministic" in result.output
+    assert "No nondeterminism found in varix.adapters:FakeAdapter." in result.output
+    assert "n=2" in result.output
 
 
 def test_show_unknown_id_exits_one(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
