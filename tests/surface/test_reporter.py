@@ -299,6 +299,15 @@ def test_render_clean_analysis_has_no_warning_section() -> None:
     assert "WARNING" not in render_analysis(analysis)
 
 
+def test_display_pipeline_name_strips_path_prefix() -> None:
+    from varix.surface.reporter import _display_pipeline_name
+
+    assert _display_pipeline_name("C:\\Users\\foo\\agent.py") == "agent.py"
+    assert _display_pipeline_name("/tmp/agent.py") == "agent.py"
+    assert _display_pipeline_name("varix.adapters:FakeAdapter") == "varix.adapters:FakeAdapter"
+    assert _display_pipeline_name("agent.py") == "agent.py"
+
+
 def test_short_id_takes_first_eight_chars() -> None:
     from varix.surface.reporter import _short_id
 

@@ -7,6 +7,7 @@ vocabulary while machine consumers keep stable identifiers.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 
@@ -34,6 +35,17 @@ _OUTPUT_TRUNCATE_LEN = 60
 def _short_id(analysis_id: str) -> str:
     """First 8 characters of an analysis_id — enough to disambiguate recent runs."""
     return analysis_id[:_ID_DISPLAY_LEN]
+
+
+def _display_pipeline_name(name: str) -> str:
+    """Strip the directory prefix when name is a file path; pass import strings through.
+
+    `agent.py` reads better than `C:\\Users\\...\\tmp\\agent.py` in the headline.
+    Import strings like `pkg.mod:object` have no path separators and are unchanged.
+    """
+    if "/" in name or "\\" in name:
+        return os.path.basename(name)
+    return name
 
 
 def _truncate(text: str, max_chars: int = _OUTPUT_TRUNCATE_LEN) -> str:
@@ -145,14 +157,41 @@ def _paren_confidence(c: Confidence) -> str:
     return f"{_CONFIDENCE_LABELS[c]} confidence"
 
 
-def _impact_verdict(report: ImpactReport) -> str:
-    sid = report.source_step_id
-    conf = _paren_confidence(report.confidence)
-    if report.confidence is Confidence.UNAVAILABLE:
-        return f"impact of {sid} could not be determined ({conf})."
-    if report.behavior is ImpactBehavior.PROPAGATES:
-        return f"{sid} changes the final output of every run ({conf})."
-    return f"{sid}'s variance is absorbed before the final output ({conf})."
+def _count_modal_final_output(
+    runs: Sequence[PipelineRun],
+    final_step_id: str,
+    metric: ExactMatch,
+) -> int:
+    """Largest equivalence-class size among final-step outputs across runs.
+
+    With finals (c1, c1, c2, c3, c4): modal class is c1 (size 2) → 2 runs were
+    'absorbed' to the modal answer, the other 3 reached different answers.
+    """
+    finals: list[object] = []
+    for r in runs:
+        for sr in r.step_runs:
+            if sr.step_id == final_step_id:
+                finals.append(sr.output)
+                break
+    if not finals:
+        return 0
+    classes: list[list[object]] = []
+    for v in finals:
+        for c in classes:
+            if metric.equivalent(v, c[0]):
+                c.append(v)
+                break
+        else:
+            classes.append([v])
+    return max(len(c) for c in classes)
+
+
+def _impact_source_unique(report: ImpactReport) -> int:
+    """Pull source_unique_outputs from the impact evidence; 0 when absent."""
+    for ev in report.evidence:
+        if ev.kind == "source_to_final_diff":
+            return int(ev.data.get("source_unique_outputs", 0))
+    return 0
 
 
 # Confidence ranking — used to pick the primary finding when a step has several.
@@ -273,6 +312,7 @@ def render_analysis(analysis: PipelineAnalysis) -> str:
     """
     outcomes = Localizer(metric=ExactMatch()).classify_steps(analysis.runs)
     step_ids = [sr.step_id for sr in analysis.runs[0].step_runs] if analysis.runs else []
+    pipeline_label = _display_pipeline_name(analysis.pipeline_name)
 
     findings_by_step: dict[str, list[Finding]] = {}
     for f in analysis.findings:
@@ -291,7 +331,7 @@ def render_analysis(analysis: PipelineAnalysis) -> str:
     if sources:
         plural = "s" if len(sources) != 1 else ""
         lines.append(
-            f"Found {len(sources)} source{plural} of nondeterminism in {analysis.pipeline_name}."
+            f"Found {len(sources)} source{plural} of nondeterminism in {pipeline_label}."
         )
         lines.append("")
         lines.extend(_render_source_lines(sources, impacts, findings_by_step))
@@ -320,7 +360,7 @@ def render_analysis(analysis: PipelineAnalysis) -> str:
             cmd = f"varix explain {f.step_id}"
             lines.append(f"  {cmd.ljust(len(cmd) + 6)}see the fingerprint evidence")
         return "\n".join(lines)
-    lines.append(f"No nondeterminism found in {analysis.pipeline_name}.")
+    lines.append(f"No nondeterminism found in {pipeline_label}.")
     lines.append("")
     lines.append(_format_receipt(analysis))
     return "\n".join(lines)
@@ -363,19 +403,67 @@ def render_explain(analysis: PipelineAnalysis, step_id: str) -> str:
 
 
 def render_impact(analysis: PipelineAnalysis, report: ImpactReport) -> str:
-    """Render an `ImpactReport` for a single source step. ASCII-only, no trailing newline."""
+    """Render an `ImpactReport` for a single source step. ASCII-only, no trailing newline.
+
+    Four cases:
+      - UNAVAILABLE: 'Impact of <step> could not be determined' + reason.
+      - <step> IS the final step: definitional sentence (variance IS the output's variance).
+      - PROPAGATES: '<step>'s variance changes the final output' + ratio prose.
+      - ABSORBED downstream: '<step>'s variance is absorbed' + diversity prose.
+    """
+    sid = report.source_step_id
+    short_id = _short_id(analysis.analysis_id)
     lines: list[str] = []
-    lines.append(f"=== impact {report.source_step_id} ===")
-    lines.append(f"analysis_id: {analysis.analysis_id}")
-    lines.append(f"pipeline:    {analysis.pipeline_name}")
-    lines.append("")
-    lines.append(f"verdict:     {_impact_verdict(report)}")
-    lines.append(f"reason:      {report.reason}")
-    if report.evidence:
+
+    if report.confidence is Confidence.UNAVAILABLE:
+        lines.append(f"Impact of {sid} could not be determined.")
         lines.append("")
-        lines.append("evidence:")
-        for ev in report.evidence:
-            lines.append(f"  [{ev.kind}] {ev.description}")
-            for k, v in ev.data.items():
-                lines.append(f"    {k}: {v}")
+        lines.append(f"  {report.reason}")
+        lines.append("")
+        lines.append(f"confidence: {_CONFIDENCE_LABELS[Confidence.UNAVAILABLE]}")
+        lines.append(f"analysis: {short_id}")
+        return "\n".join(lines)
+
+    is_final_step = (
+        report.behavior is ImpactBehavior.ABSORBED
+        and (report.final_step_id is None or report.final_step_id == sid)
+    )
+
+    if is_final_step:
+        lines.append(
+            f"{sid} is the final step in the pipeline; "
+            f"its variance IS the final output's variance."
+        )
+    elif report.behavior is ImpactBehavior.PROPAGATES:
+        n = analysis.n
+        modal = _count_modal_final_output(analysis.runs, report.final_step_id or sid, ExactMatch())
+        lines.append(f"{sid}'s variance changes the final output.")
+        lines.append("")
+        if modal <= 1:
+            lines.append(f"  {n} of {n} runs reached a different final answer.")
+        else:
+            different = n - modal
+            lines.append(
+                f"  {different} of {n} runs reached a different final answer; "
+                f"{modal} were absorbed."
+            )
+    else:
+        # ABSORBED, downstream pipeline normalized the variance.
+        n = analysis.n
+        source_unique = _impact_source_unique(report)
+        lines.append(f"{sid}'s variance is absorbed before the final output.")
+        lines.append("")
+        lines.append(
+            f"  {source_unique} different {sid} outputs produced only 1 final answer "
+            f"across {n} runs."
+        )
+        lines.append("  The downstream pipeline normalized the differences.")
+
+    lines.append("")
+    lines.append(f"confidence: {_CONFIDENCE_LABELS[report.confidence]}")
+    lines.append(f"analysis: {short_id}")
+    lines.append("")
+    lines.append("Next:")
+    cmd = f"varix explain {sid}"
+    lines.append(f"  {cmd.ljust(len(cmd) + 6)}see the evidence varix used")
     return "\n".join(lines)
