@@ -149,7 +149,8 @@ def test_execute_show_appends_ran_x_ago_relative_to_finished_at(tmp_path: Path) 
         clock=FrozenClock(_T),
         rng=SequenceRng(["aged-id"]),
     )
-    rendered = execute_show("aged-id", base_dir=tmp_path, clock=FrozenClock(_T + timedelta(hours=2)))
+    later = FrozenClock(_T + timedelta(hours=2))
+    rendered = execute_show("aged-id", base_dir=tmp_path, clock=later)
     assert "ran 2 hours ago" in rendered
 
 

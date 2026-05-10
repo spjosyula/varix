@@ -33,7 +33,13 @@ Every answer ships with a confidence level — high, medium, low, or "cannot ver
 
 ```powershell
 pip install varix[gemini]            # or [anthropic], [langgraph]
-setx GEMINI_API_KEY "your-key-here"  # restart your terminal after this
+setx GEMINI_API_KEY "your-key-here"  # Windows: restart your terminal after
+```
+
+On macOS or Linux, set the API key with `export` and add the line to your shell profile (`~/.zshrc` or `~/.bashrc`) so it persists:
+
+```bash
+export GEMINI_API_KEY="your-key-here"
 ```
 
 ## Quickstart
