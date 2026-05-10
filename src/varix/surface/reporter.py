@@ -7,6 +7,9 @@ vocabulary while machine consumers keep stable identifiers.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
+from datetime import datetime
+
 from varix.analysis import ImpactBehavior, ImpactEstimator, ImpactReport, Localizer
 from varix.core import (
     Classification,
@@ -15,9 +18,88 @@ from varix.core import (
     Finding,
     LocalizationOutcome,
     PipelineAnalysis,
+    PipelineRun,
 )
 
 __all__ = ["render_analysis", "render_explain", "render_impact"]
+
+
+# Pure, side-effect-free utilities used by the render functions below.
+# Kept private; tests reach in via underscore imports.
+
+_ID_DISPLAY_LEN = 8
+_OUTPUT_TRUNCATE_LEN = 60
+
+
+def _short_id(analysis_id: str) -> str:
+    """First 8 characters of an analysis_id — enough to disambiguate recent runs."""
+    return analysis_id[:_ID_DISPLAY_LEN]
+
+
+def _truncate(text: str, max_chars: int = _OUTPUT_TRUNCATE_LEN) -> str:
+    """Truncate `text` to `max_chars`, appending '...' when cut."""
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars] + "..."
+
+
+def _format_duration(start: datetime, end: datetime) -> str:
+    """Render a wall-clock delta as '0.0s', '14s', or '2m 14s'."""
+    total = max((end - start).total_seconds(), 0.0)
+    if total < 10:
+        return f"{total:.1f}s"
+    if total < 60:
+        return f"{int(total)}s"
+    minutes = int(total // 60)
+    seconds = int(total - minutes * 60)
+    return f"{minutes}m {seconds}s"
+
+
+def _format_relative_time(when: datetime, now: datetime) -> str:
+    """Render `when` relative to `now` ('just now', '5 minutes ago', '2 hours ago')."""
+    seconds = int((now - when).total_seconds())
+    if seconds < 60:
+        return "just now"
+    minutes = seconds // 60
+    if minutes < 60:
+        unit = "minute" if minutes == 1 else "minutes"
+        return f"{minutes} {unit} ago"
+    hours = minutes // 60
+    if hours < 24:
+        unit = "hour" if hours == 1 else "hours"
+        return f"{hours} {unit} ago"
+    days = hours // 24
+    unit = "day" if days == 1 else "days"
+    return f"{days} {unit} ago"
+
+
+def _rank_source_step_ids(
+    runs: Sequence[PipelineRun],
+    outcomes: Mapping[str, LocalizationOutcome],
+    pipeline_step_ids: Sequence[str],
+) -> list[str]:
+    """Order SOURCE step ids by impact (PROPAGATES first), then pipeline order within tier."""
+    estimator = ImpactEstimator()
+    propagates: list[str] = []
+    absorbed: list[str] = []
+    for sid in pipeline_step_ids:
+        if outcomes.get(sid) is not LocalizationOutcome.SOURCE:
+            continue
+        report = estimator.estimate(runs, sid)
+        if report.behavior is ImpactBehavior.PROPAGATES:
+            propagates.append(sid)
+        else:
+            absorbed.append(sid)
+    return propagates + absorbed
+
+
+def _format_receipt(analysis: PipelineAnalysis) -> str:
+    """Single-line receipt: 'n=3 | $0.0007 | 14s | analysis abc12345'."""
+    duration = _format_duration(analysis.started_at, analysis.finished_at)
+    return (
+        f"n={analysis.n} | ${analysis.total_cost.dollars:.4f} | "
+        f"{duration} | analysis {_short_id(analysis.analysis_id)}"
+    )
 
 
 _LOCALIZATION_LABELS: dict[LocalizationOutcome, str] = {

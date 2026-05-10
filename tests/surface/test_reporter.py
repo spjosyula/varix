@@ -282,6 +282,194 @@ def test_render_clean_analysis_has_no_warning_section() -> None:
     assert "WARNING" not in render_analysis(analysis)
 
 
+def test_short_id_takes_first_eight_chars() -> None:
+    from varix.surface.reporter import _short_id
+
+    assert _short_id("c13cfc73-8f25-49c5-a8a2-6a513f740598") == "c13cfc73"
+
+
+def test_short_id_handles_input_shorter_than_eight() -> None:
+    from varix.surface.reporter import _short_id
+
+    assert _short_id("abc") == "abc"
+
+
+def test_truncate_returns_input_when_under_limit() -> None:
+    from varix.surface.reporter import _truncate
+
+    assert _truncate("hello", max_chars=10) == "hello"
+
+
+def test_truncate_appends_ellipsis_when_over_limit() -> None:
+    from varix.surface.reporter import _truncate
+
+    assert _truncate("0123456789abcdef", max_chars=10) == "0123456789..."
+
+
+def test_format_duration_subsecond_keeps_decimal() -> None:
+    from datetime import timedelta
+
+    from varix.surface.reporter import _format_duration
+
+    t = datetime(2026, 5, 8, 12, 0, 0, tzinfo=UTC)
+    assert _format_duration(t, t) == "0.0s"
+    assert _format_duration(t, t + timedelta(seconds=2.5)) == "2.5s"
+
+
+def test_format_duration_seconds_int_above_ten() -> None:
+    from datetime import timedelta
+
+    from varix.surface.reporter import _format_duration
+
+    t = datetime(2026, 5, 8, 12, 0, 0, tzinfo=UTC)
+    assert _format_duration(t, t + timedelta(seconds=14)) == "14s"
+
+
+def test_format_duration_minutes_and_seconds() -> None:
+    from datetime import timedelta
+
+    from varix.surface.reporter import _format_duration
+
+    t = datetime(2026, 5, 8, 12, 0, 0, tzinfo=UTC)
+    assert _format_duration(t, t + timedelta(minutes=2, seconds=14)) == "2m 14s"
+
+
+def test_format_duration_clamps_negative_to_zero() -> None:
+    from datetime import timedelta
+
+    from varix.surface.reporter import _format_duration
+
+    t = datetime(2026, 5, 8, 12, 0, 0, tzinfo=UTC)
+    assert _format_duration(t + timedelta(seconds=5), t) == "0.0s"
+
+
+def test_format_relative_time_just_now() -> None:
+    from datetime import timedelta
+
+    from varix.surface.reporter import _format_relative_time
+
+    t = datetime(2026, 5, 8, 12, 0, 0, tzinfo=UTC)
+    assert _format_relative_time(t, t + timedelta(seconds=30)) == "just now"
+
+
+def test_format_relative_time_minutes_pluralization() -> None:
+    from datetime import timedelta
+
+    from varix.surface.reporter import _format_relative_time
+
+    t = datetime(2026, 5, 8, 12, 0, 0, tzinfo=UTC)
+    assert _format_relative_time(t, t + timedelta(minutes=1)) == "1 minute ago"
+    assert _format_relative_time(t, t + timedelta(minutes=5)) == "5 minutes ago"
+
+
+def test_format_relative_time_hours_and_days() -> None:
+    from datetime import timedelta
+
+    from varix.surface.reporter import _format_relative_time
+
+    t = datetime(2026, 5, 8, 12, 0, 0, tzinfo=UTC)
+    assert _format_relative_time(t, t + timedelta(hours=2)) == "2 hours ago"
+    assert _format_relative_time(t, t + timedelta(days=3)) == "3 days ago"
+    assert _format_relative_time(t, t + timedelta(hours=1)) == "1 hour ago"
+
+
+def test_rank_source_step_ids_propagates_first_then_absorbed() -> None:
+    """A source step that's also the final step is ABSORBED; other sources PROPAGATE."""
+    from varix.core import (
+        SCHEMA_VERSION,
+        CostSnapshot,
+        LocalizationOutcome,
+        PipelineAnalysis,
+        PipelineRun,
+        StepRun,
+    )
+    from varix.surface.reporter import _rank_source_step_ids
+
+    def _run(run_id: str, a_out: str, c_out: str) -> PipelineRun:
+        return PipelineRun(
+            run_id=run_id,
+            step_runs=(
+                StepRun(step_id="a", inputs="in_a", output=a_out),
+                StepRun(step_id="b", inputs="in_b", output="b_const"),
+                StepRun(step_id="c", inputs="in_c", output=c_out),
+            ),
+            started_at=_FROZEN,
+            finished_at=_FROZEN,
+        )
+
+    runs = (_run("r1", "a1", "c1"), _run("r2", "a2", "c2"))
+    outcomes = {
+        "a": LocalizationOutcome.SOURCE,
+        "b": LocalizationOutcome.DETERMINISTIC,
+        "c": LocalizationOutcome.SOURCE,
+    }
+    # Reference unused PipelineAnalysis import for mypy-strict.
+    _ = PipelineAnalysis(
+        analysis_id="x",
+        pipeline_name="x",
+        n=2,
+        metric_name="exact",
+        schema_version=SCHEMA_VERSION,
+        runs=runs,
+        findings=(),
+        started_at=_FROZEN,
+        finished_at=_FROZEN,
+        total_cost=CostSnapshot(),
+    )
+    ranked = _rank_source_step_ids(runs, outcomes, ["a", "b", "c"])
+    # `a` propagates (final c varies); `c` is the final step → ABSORBED special-case.
+    assert ranked == ["a", "c"]
+
+
+def test_rank_source_step_ids_skips_non_sources() -> None:
+    from varix.core import LocalizationOutcome, PipelineRun, StepRun
+    from varix.surface.reporter import _rank_source_step_ids
+
+    runs = (
+        PipelineRun(
+            run_id="r1",
+            step_runs=(StepRun(step_id="a", inputs="i", output="o"),),
+            started_at=_FROZEN,
+            finished_at=_FROZEN,
+        ),
+    )
+    outcomes = {"a": LocalizationOutcome.DETERMINISTIC}
+    assert _rank_source_step_ids(runs, outcomes, ["a"]) == []
+
+
+def test_format_receipt_assembles_n_cost_duration_short_id() -> None:
+    from datetime import timedelta
+
+    from varix.core import (
+        SCHEMA_VERSION,
+        CostSnapshot,
+        PipelineAnalysis,
+        PipelineRun,
+        StepRun,
+    )
+    from varix.surface.reporter import _format_receipt
+
+    pr = PipelineRun(
+        run_id="r1",
+        step_runs=(StepRun(step_id="s1", inputs="i", output="o"),),
+        started_at=_FROZEN,
+        finished_at=_FROZEN,
+    )
+    analysis = PipelineAnalysis(
+        analysis_id="abc12345-rest-of-the-uuid",
+        pipeline_name="fake",
+        n=3,
+        metric_name="exact",
+        schema_version=SCHEMA_VERSION,
+        runs=(pr,),
+        findings=(),
+        started_at=_FROZEN,
+        finished_at=_FROZEN + timedelta(seconds=14),
+        total_cost=CostSnapshot(input_tokens=0, output_tokens=0, dollars=0.0007),
+    )
+    assert _format_receipt(analysis) == "n=3 | $0.0007 | 14s | analysis abc12345"
+
+
 def test_render_includes_unavailable_findings() -> None:
     """Regression: UNAVAILABLE findings (from missing capability) survive into the report."""
     from varix.core import (
