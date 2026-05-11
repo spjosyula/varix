@@ -11,6 +11,7 @@ from varix.core import RefusalRequired, StructuralMismatch
 from varix.surface.dispatch import (
     execute_explain,
     execute_impact,
+    execute_list,
     execute_replay,
     execute_run,
     execute_show,
@@ -116,6 +117,22 @@ def show_cmd(
         raise typer.Exit(code=2) from exc
     except (FileNotFoundError, OSError) as exc:
         typer.echo(f"varix show: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(rendered)
+
+
+@app.command("list")
+def list_cmd() -> None:
+    """List saved analyses, most-recent first.
+
+    Reads `~/.varix/runs/` (or `$VARIX_RUNS_DIR`) and shows up to 20 recent
+    analyses with their short id, when they ran, the pipeline they ran
+    against, and a one-line verdict.
+    """
+    try:
+        rendered = execute_list()
+    except OSError as exc:
+        typer.echo(f"varix list: {exc}", err=True)
         raise typer.Exit(code=1) from exc
     typer.echo(rendered)
 

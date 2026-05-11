@@ -24,7 +24,7 @@ from varix.core import (
     StepRun,
 )
 
-__all__ = ["render_analysis", "render_explain", "render_impact", "render_replay"]
+__all__ = ["render_analysis", "render_explain", "render_impact", "render_list", "render_replay"]
 
 
 # Pure, side-effect-free utilities used by the render functions below.
@@ -750,4 +750,80 @@ def render_impact(analysis: PipelineAnalysis, report: ImpactReport) -> str:
     lines.append("Next:")
     cmd = f"varix explain {sid}"
     lines.append(f"  {cmd.ljust(len(cmd) + 6)}see the evidence varix used")
+    return "\n".join(lines)
+
+
+_LIST_NAME_MAX = 40
+_LIST_NAME_TRUNCATE_AT = _LIST_NAME_MAX - 3  # leave room for the trailing "..."
+
+
+def _list_summary(analysis: PipelineAnalysis) -> str:
+    """One-line summary for the `varix list` table.
+
+    Derives the verdict from stored findings + ImpactEstimator (re-walks runs).
+    Localizer outcomes aren't stored per-step, so we read each finding's
+    own `localization` field to identify source steps.
+    """
+    if analysis.n < 2:
+        return f"inconclusive (n={analysis.n})"
+
+    source_steps = sorted(
+        {f.step_id for f in analysis.findings if f.localization is LocalizationOutcome.SOURCE}
+    )
+    if source_steps:
+        estimator = ImpactEstimator()
+        behaviors = [estimator.estimate(analysis.runs, sid).behavior for sid in source_steps]
+        propagates = sum(1 for b in behaviors if b is ImpactBehavior.PROPAGATES)
+        absorbed = sum(1 for b in behaviors if b is ImpactBehavior.ABSORBED)
+        if propagates == len(behaviors):
+            qualifier = "propagates"
+        elif absorbed == len(behaviors):
+            qualifier = "absorbed"
+        else:
+            qualifier = "mixed"
+        n = len(source_steps)
+        return f"{n} source{'s' if n != 1 else ''} ({qualifier})"
+
+    env = [
+        f
+        for f in analysis.findings
+        if f.confidence is Confidence.HIGH
+        and f.localization is LocalizationOutcome.DETERMINISTIC
+    ]
+    if env:
+        return "stable, routing varied"
+
+    return "clean"
+
+
+def render_list(analyses: list[PipelineAnalysis], now: datetime) -> str:
+    """Render a 'recent analyses' table. ASCII-only, no trailing newline."""
+    if not analyses:
+        return "no analyses found."
+
+    rows: list[tuple[str, str, str, str]] = []
+    for a in analyses:
+        rows.append(
+            (
+                _short_id(a.analysis_id),
+                _format_relative_time(a.finished_at, now),
+                _display_pipeline_name(a.pipeline_name),
+                _list_summary(a),
+            )
+        )
+
+    when_w = max(len(r[1]) for r in rows)
+    name_w = min(_LIST_NAME_MAX, max(len(r[2]) for r in rows))
+
+    lines = ["recent analyses:", ""]
+    for short, when, name, summary in rows:
+        displayed_name = (
+            name if len(name) <= _LIST_NAME_MAX else name[:_LIST_NAME_TRUNCATE_AT] + "..."
+        )
+        lines.append(
+            f"  {short}  {when.ljust(when_w)}  {displayed_name.ljust(name_w)}  {summary}"
+        )
+    lines.append("")
+    suffix = "analysis" if len(analyses) == 1 else "analyses"
+    lines.append(f"showing {len(analyses)} {suffix}.")
     return "\n".join(lines)

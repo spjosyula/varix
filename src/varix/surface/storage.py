@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -76,6 +77,41 @@ def latest_analysis(base_dir: Path | None = None) -> Path | None:
     if not paths:
         return None
     return max(paths, key=lambda p: p.stat().st_mtime)
+
+
+def recent_analyses(
+    base_dir: Path | None = None,
+    *,
+    limit: int = 20,
+    predicate: Callable[[PipelineAnalysis], bool] | None = None,
+) -> list[PipelineAnalysis]:
+    """Return up to `limit` analyses, most-recent first by file mtime.
+
+    Artifacts that fail to load (corrupt JSON, schema_version newer than this
+    varix understands) are skipped silently — one bad file shouldn't break
+    the listing. Callers needing the error surface should `load_path` directly.
+
+    `predicate` is applied after load and before the limit cap, so the
+    returned list reflects N filtered artifacts (not N candidates filtered
+    down to fewer). The walker uses mtime as a cheap ordering proxy; the
+    displayed temporal context for any analysis still comes from its
+    `finished_at` field.
+    """
+    paths = list_analyses(base_dir)
+    paths.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+
+    out: list[PipelineAnalysis] = []
+    for path in paths:
+        try:
+            analysis = load_path(path)
+        except (RefusalRequired, OSError, json.JSONDecodeError):
+            continue
+        if predicate is not None and not predicate(analysis):
+            continue
+        out.append(analysis)
+        if len(out) >= limit:
+            break
+    return out
 
 
 def _resolve_dir(base_dir: Path | None) -> Path:

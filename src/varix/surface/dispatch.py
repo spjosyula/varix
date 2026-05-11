@@ -26,8 +26,20 @@ from varix.core import (
 )
 from varix.execution import CostAccumulator, run_n
 from varix.surface.loader import load_adapter
-from varix.surface.reporter import render_analysis, render_explain, render_impact, render_replay
-from varix.surface.storage import latest_analysis, load, load_path, save
+from varix.surface.reporter import (
+    render_analysis,
+    render_explain,
+    render_impact,
+    render_list,
+    render_replay,
+)
+from varix.surface.storage import (
+    latest_analysis,
+    load,
+    load_path,
+    recent_analyses,
+    save,
+)
 
 _RUNS_DIR_ENV = "VARIX_RUNS_DIR"
 
@@ -121,6 +133,23 @@ def execute_show(
     analysis = _load_target(target, base_dir)
     actual_clock = clock if clock is not None else SystemClock()
     return render_analysis(analysis, now=actual_clock.now())
+
+
+def execute_list(
+    *,
+    base_dir: Path | None = None,
+    clock: Clock | None = None,
+    limit: int = 20,
+) -> str:
+    """Render a table of recent analyses, most-recent first.
+
+    Unreadable artifacts (corrupt JSON, newer schema, etc.) are skipped by
+    the storage walker — see `recent_analyses` for the policy.
+    """
+    actual_clock = clock if clock is not None else SystemClock()
+    resolved_dir = resolve_runs_dir(base_dir)
+    analyses = recent_analyses(resolved_dir, limit=limit)
+    return render_list(analyses, now=actual_clock.now())
 
 
 def execute_replay(
