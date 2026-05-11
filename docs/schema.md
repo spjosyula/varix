@@ -5,7 +5,7 @@ varix persists each analysis as one JSON file at
 top-level `schema_version` field, which is also exposed in code as
 `varix.core.SCHEMA_VERSION`.
 
-The current shipping schema is **0.1**.
+The current shipping schema is **0.2**. Schema 0.1 is still readable; see "Reading older artifacts" below.
 
 ## Versioning rules
 
@@ -22,16 +22,28 @@ The current shipping schema is **0.1**.
 
 ## Reading older artifacts
 
-When schema 0.2 ships and breaks the layout, the `_KNOWN_VERSIONS` tuple in
-`src/varix/surface/storage.py` will grow to include `"0.1"`, and the
-`_migrate_to_current` function will register a stepwise migration that
-converts 0.1 data into the 0.2 shape before `PipelineAnalysis.from_dict`
-sees it.
+`_KNOWN_VERSIONS` in `src/varix/surface/storage.py` lists every schema
+version varix can read. The tuple grows over time and never shrinks —
+this is the "forever-readable" commitment that makes saved artifacts
+trustworthy as bug-report units and replay inputs.
 
-Migrations are stepwise (0.1 → 0.2 → 0.3, not 0.1 → 0.3 directly). Each
-step lives in code with a comment explaining what changed and why.
+When the schema bumps, the `_migrate_to_current` function registers a
+stepwise migration that converts old data into the current shape before
+`PipelineAnalysis.from_dict` sees it. Migrations are stepwise
+(0.1 → 0.2 → 0.3, not 0.1 → 0.3 directly). Each step is a clear comment
+explaining what changed and why.
 
-## What's in a 0.1 artifact
+### Migration table
+
+- **0.1 → 0.2.** Added optional `capabilities` field recording the
+  adapter's `AdapterCapabilities` at run time. No data transformation
+  needed — old artifacts simply lack the key, and `from_dict` treats
+  missing as `None`. Consumers that need capabilities (e.g. `varix
+  replay`) fall back to `varix.analysis.infer_capabilities`, which
+  scans the runs themselves to derive what the adapter must have
+  exposed.
+
+## What's in a 0.2 artifact
 
 Top-level fields:
 
@@ -39,13 +51,16 @@ Top-level fields:
 - `pipeline_name` — human-readable label for the analyzed pipeline.
 - `n` — how many times the pipeline was run.
 - `metric_name` — the `VarianceMetric.name()` used (`"exact"` for ExactMatch).
-- `schema_version` — `"0.1"`.
+- `schema_version` — `"0.2"`.
 - `runs` — array of `PipelineRun` records.
 - `findings` — array of `Finding` records.
 - `started_at` / `finished_at` — ISO-8601 timestamps.
 - `total_cost` — accumulated `CostSnapshot`.
 - `step_replays` — `{step_id: [StepRun, ...]}` mapping for any replays
   collected during analysis.
+- `notes` — list of strings; runtime + analysis-derived warnings.
+- `capabilities` — recorded `AdapterCapabilities` (new in 0.2; null for
+  legacy artifacts loaded via the 0.1 migration).
 
 The exact field shape of each nested record matches what its
 `to_dict()` / `from_dict()` pair produces — see

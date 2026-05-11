@@ -7,7 +7,6 @@ vocabulary while machine consumers keep stable identifiers.
 
 from __future__ import annotations
 
-import os
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from datetime import datetime
@@ -25,7 +24,7 @@ from varix.core import (
     StepRun,
 )
 
-__all__ = ["render_analysis", "render_explain", "render_impact"]
+__all__ = ["render_analysis", "render_explain", "render_impact", "render_replay"]
 
 
 # Pure, side-effect-free utilities used by the render functions below.
@@ -45,9 +44,15 @@ def _display_pipeline_name(name: str) -> str:
 
     `agent.py` reads better than `C:\\Users\\...\\tmp\\agent.py` in the headline.
     Import strings like `pkg.mod:object` have no path separators and are unchanged.
+
+    Hand-rolled instead of `os.path.basename`: that one only honors the host
+    platform's separator, so Windows paths leak through unchanged on Linux CI.
+    Treating both `/` and `\\` as separators is correct for our two input shapes
+    (paths from either platform; import strings have neither).
     """
-    if "/" in name or "\\" in name:
-        return os.path.basename(name)
+    last_sep = max(name.rfind("/"), name.rfind("\\"))
+    if last_sep >= 0:
+        return name[last_sep + 1 :]
     return name
 
 
@@ -108,11 +113,17 @@ def _rank_source_step_ids(
     return propagates + absorbed
 
 
-def _format_receipt(analysis: PipelineAnalysis, now: datetime | None = None) -> str:
+def _format_receipt(
+    analysis: PipelineAnalysis,
+    now: datetime | None = None,
+    replayed: bool = False,
+) -> str:
     """Single-line receipt: 'n=3 | $0.0007 | 14s | analysis abc12345'.
 
-    When `now` is given, append ' | ran <relative-time>' — used by `varix show`
-    to give the engineer temporal context when re-reading a past analysis.
+    `now` appends ' | ran <relative-time>' (used by `varix show`).
+    `replayed` appends ' | replayed' (used by `varix replay`).
+    The two are mutually exclusive in practice — replay's preamble already
+    carries timing context.
     """
     duration = _format_duration(analysis.started_at, analysis.finished_at)
     line = (
@@ -121,6 +132,8 @@ def _format_receipt(analysis: PipelineAnalysis, now: datetime | None = None) -> 
     )
     if now is not None:
         line += f" | ran {_format_relative_time(analysis.finished_at, now)}"
+    if replayed:
+        line += " | replayed"
     return line
 
 
@@ -290,7 +303,11 @@ def _render_next_block(
     return out
 
 
-def render_analysis(analysis: PipelineAnalysis, now: datetime | None = None) -> str:
+def render_analysis(
+    analysis: PipelineAnalysis,
+    now: datetime | None = None,
+    replayed: bool = False,
+) -> str:
     """Return a plain-text report for `analysis`. ASCII-only, no trailing newline.
 
     Four cases:
@@ -300,8 +317,9 @@ def render_analysis(analysis: PipelineAnalysis, now: datetime | None = None) -> 
          routing varied' + finding detail + receipt + Next.
       4. n>=2, has sources: 'Found N sources' + ranked source lines + receipt + Next.
 
-    When `now` is given, the receipt grows a ' | ran <relative-time>' suffix.
-    `varix show` passes the wall-clock current time; `varix run` does not.
+    Receipt suffix:
+      - `now` adds ' | ran <relative-time>' (used by `varix show`)
+      - `replayed=True` adds ' | replayed' (used by `varix replay`)
     """
     outcomes = Localizer(metric=ExactMatch()).classify_steps(analysis.runs)
     step_ids = [sr.step_id for sr in analysis.runs[0].step_runs] if analysis.runs else []
@@ -314,7 +332,7 @@ def render_analysis(analysis: PipelineAnalysis, now: datetime | None = None) -> 
     lines: list[str] = []
     lines.extend(_render_warning_block(analysis.notes))
     if analysis.n < 2:
-        lines.append(_format_receipt(analysis, now=now))
+        lines.append(_format_receipt(analysis, now=now, replayed=replayed))
         return "\n".join(lines)
 
     sources = _rank_source_step_ids(analysis.runs, outcomes, step_ids)
@@ -329,7 +347,7 @@ def render_analysis(analysis: PipelineAnalysis, now: datetime | None = None) -> 
         lines.append("")
         lines.extend(_render_source_lines(sources, impacts, findings_by_step))
         lines.append("")
-        lines.append(_format_receipt(analysis, now=now))
+        lines.append(_format_receipt(analysis, now=now, replayed=replayed))
         lines.append("")
         lines.extend(_render_next_block(sources, impacts))
         return "\n".join(lines)
@@ -346,7 +364,7 @@ def render_analysis(analysis: PipelineAnalysis, now: datetime | None = None) -> 
         lines.append("  your requests to different model infrastructure. Future runs may")
         lines.append("  behave differently.")
         lines.append("")
-        lines.append(_format_receipt(analysis, now=now))
+        lines.append(_format_receipt(analysis, now=now, replayed=replayed))
         lines.append("")
         lines.append("Next:")
         for f in env_findings:
@@ -355,8 +373,23 @@ def render_analysis(analysis: PipelineAnalysis, now: datetime | None = None) -> 
         return "\n".join(lines)
     lines.append(f"No nondeterminism found in {pipeline_label}.")
     lines.append("")
-    lines.append(_format_receipt(analysis, now=now))
+    lines.append(_format_receipt(analysis, now=now, replayed=replayed))
     return "\n".join(lines)
+
+
+def render_replay(analysis: PipelineAnalysis, now: datetime) -> str:
+    """Return a plain-text replay report: preamble + render_analysis body.
+
+    The preamble identifies the artifact and how long ago it was run. The
+    body is byte-for-byte what `render_analysis` would produce for the same
+    artifact under the current varix version, with `| replayed` appended to
+    the receipt so the reader knows nothing was newly billed.
+    """
+    preamble = (
+        f"replay of analysis {_short_id(analysis.analysis_id)} from "
+        f"{_format_relative_time(analysis.finished_at, now)}."
+    )
+    return f"{preamble}\n\n{render_analysis(analysis, replayed=True)}"
 
 
 def _classification_long(c: Classification | None) -> str:

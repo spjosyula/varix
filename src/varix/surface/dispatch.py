@@ -8,10 +8,11 @@ target these functions directly to avoid going through the CLI runner.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import os
 from pathlib import Path
 
-from varix.analysis import ImpactEstimator, analyze
+from varix.analysis import ImpactEstimator, analyze, infer_capabilities
 from varix.core import (
     SCHEMA_VERSION,
     BudgetExceeded,
@@ -25,7 +26,7 @@ from varix.core import (
 )
 from varix.execution import CostAccumulator, run_n
 from varix.surface.loader import load_adapter
-from varix.surface.reporter import render_analysis, render_explain, render_impact
+from varix.surface.reporter import render_analysis, render_explain, render_impact, render_replay
 from varix.surface.storage import latest_analysis, load, load_path, save
 
 _RUNS_DIR_ENV = "VARIX_RUNS_DIR"
@@ -120,6 +121,42 @@ def execute_show(
     analysis = _load_target(target, base_dir)
     actual_clock = clock if clock is not None else SystemClock()
     return render_analysis(analysis, now=actual_clock.now())
+
+
+def execute_replay(
+    target: str,
+    *,
+    base_dir: Path | None = None,
+    clock: Clock | None = None,
+) -> str:
+    """Re-classify a saved artifact's runs and return the rendered text.
+
+    Pure read of the artifact: never imports the adapter that produced it.
+    Capabilities come from the artifact when recorded (schema 0.2+) or from
+    `infer_capabilities` for legacy schema-0.1 artifacts.
+
+    Notes from the original run (budget exceeded, n<2 inconclusive, etc.)
+    are preserved alongside re-derived analysis notes; duplicates dedupe.
+    """
+    analysis = _load_target(target, base_dir)
+    actual_clock = clock if clock is not None else SystemClock()
+
+    capabilities = analysis.capabilities or infer_capabilities(analysis)
+    result = analyze(analysis.runs, capabilities, metric=ExactMatch())
+
+    merged_notes: list[str] = []
+    seen: set[str] = set()
+    for note in (*analysis.notes, *result.notes):
+        if note not in seen:
+            seen.add(note)
+            merged_notes.append(note)
+
+    replayed = dataclasses.replace(
+        analysis,
+        findings=result.findings,
+        notes=tuple(merged_notes),
+    )
+    return render_replay(replayed, now=actual_clock.now())
 
 
 def execute_explain(

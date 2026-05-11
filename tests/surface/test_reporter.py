@@ -219,7 +219,7 @@ def test_headline_pluralizes_for_multiple_source_steps() -> None:
 
 
 def test_headline_omitted_when_n_is_one(tmp_path: Path) -> None:
-    """At n<2 the WARNING banner explains inconclusiveness; no verdict line."""
+    """At n<2 the WARNING banner explains inconclusiveness; no analysis headline."""
     analysis, _ = execute_run(
         pipeline="varix.adapters:FakeAdapter",
         input_text="hello",
@@ -229,8 +229,9 @@ def test_headline_omitted_when_n_is_one(tmp_path: Path) -> None:
         rng=SequenceRng(["solo-id"]),
     )
     report = render_analysis(analysis)
-    assert "verdict:" not in report
     assert "WARNING:" in report
+    assert "Found" not in report
+    assert "No nondeterminism found" not in report
 
 
 def test_render_emits_warning_banner_when_notes_present() -> None:
@@ -304,6 +305,7 @@ def test_display_pipeline_name_strips_path_prefix() -> None:
 
     assert _display_pipeline_name("C:\\Users\\foo\\agent.py") == "agent.py"
     assert _display_pipeline_name("/tmp/agent.py") == "agent.py"
+    assert _display_pipeline_name("C:/mixed/style/agent.py") == "agent.py"
     assert _display_pipeline_name("varix.adapters:FakeAdapter") == "varix.adapters:FakeAdapter"
     assert _display_pipeline_name("agent.py") == "agent.py"
 

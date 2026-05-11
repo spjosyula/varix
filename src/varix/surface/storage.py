@@ -17,7 +17,8 @@ from typing import Any
 
 from varix.core import SCHEMA_VERSION, PipelineAnalysis, RefusalRequired
 
-_KNOWN_VERSIONS: tuple[str, ...] = (SCHEMA_VERSION,)
+_KNOWN_VERSIONS: tuple[str, ...] = ("0.1", "0.2")
+assert SCHEMA_VERSION in _KNOWN_VERSIONS, "current SCHEMA_VERSION must be registered"
 
 
 def default_runs_dir() -> Path:
@@ -97,9 +98,13 @@ def _read_with_schema_check(data: dict[str, Any]) -> dict[str, Any]:
 def _migrate_to_current(data: dict[str, Any], from_version: str) -> dict[str, Any]:
     """Stepwise migration from `from_version` to the current schema.
 
-    Schema 0.1 is currently the only shipped version, so this is a no-op.
-    Future breaking changes register stepwise migrations here.
+    0.1 -> 0.2: `capabilities` field added (optional). Purely additive — no
+    data transformation needed; `PipelineAnalysis.from_dict` treats the
+    missing key as `None` and consumers fall back to `infer_capabilities`
+    when they need it.
     """
     if from_version == SCHEMA_VERSION:
+        return data
+    if from_version == "0.1":
         return data
     raise RefusalRequired(f"no migration path from schema {from_version!r} to {SCHEMA_VERSION!r}")

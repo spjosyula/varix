@@ -11,6 +11,7 @@ from varix.core import RefusalRequired, StructuralMismatch
 from varix.surface.dispatch import (
     execute_explain,
     execute_impact,
+    execute_replay,
     execute_run,
     execute_show,
 )
@@ -115,6 +116,30 @@ def show_cmd(
         raise typer.Exit(code=2) from exc
     except (FileNotFoundError, OSError) as exc:
         typer.echo(f"varix show: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(rendered)
+
+
+@app.command("replay")
+def replay_cmd(
+    analysis_id: str = typer.Argument(
+        ...,
+        help="Analysis ID, or a path to a saved JSON artifact.",
+    ),
+) -> None:
+    """Re-classify a saved artifact without re-running the LLM.
+
+    Reads the saved runs, runs the analysis again with the current classifier
+    code, and prints the result. No new LLM calls, no new cost, no adapter
+    import — everything comes from the artifact on disk.
+    """
+    try:
+        rendered = execute_replay(analysis_id)
+    except RefusalRequired as exc:
+        typer.echo(f"varix replay: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    except (FileNotFoundError, OSError) as exc:
+        typer.echo(f"varix replay: {exc}", err=True)
         raise typer.Exit(code=1) from exc
     typer.echo(rendered)
 

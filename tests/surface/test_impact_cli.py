@@ -336,8 +336,3 @@ def test_cli_impact_no_artifacts_exits_one(tmp_path: Path, monkeypatch: pytest.M
     result = cli_runner.invoke(app, ["impact", "s1"])
     assert result.exit_code == 1
     assert "varix impact:" in result.output
-
-
-def _evidence_unused() -> Evidence:
-    """Reference Evidence so the import is exercised by mypy strict."""
-    return Evidence(kind="x", description="y")
