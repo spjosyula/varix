@@ -7,7 +7,7 @@ import re
 from collections.abc import Sequence
 from typing import Any
 
-from varix.core import PipelineRun, StepRun, VarianceMetric
+from varix.core import Evidence, PipelineRun, StepRun, VarianceMetric
 
 _FINGERPRINT_KEY = "system_fingerprint"
 
@@ -110,6 +110,28 @@ def sequences_differ_with_same_multiset(observations: Sequence[StepRun]) -> bool
     if len(multisets) > 1:
         return False
     return len(set(sequences)) > 1
+
+
+def excluded_runs_evidence(excluded: Sequence[tuple[int, str]]) -> Evidence | None:
+    """Build an `Evidence` entry describing observations a classifier had to drop.
+
+    `excluded` is a sequence of `(observation_index, reason)` pairs. Returns
+    `None` when nothing was excluded — callers append unconditionally:
+
+        evidence = (primary_ev, excluded_runs_evidence(excluded))
+        evidence = tuple(e for e in evidence if e is not None)
+    """
+    if not excluded:
+        return None
+    return Evidence(
+        kind="excluded_runs",
+        description=f"{len(excluded)} observation(s) excluded due to missing data",
+        data={
+            "excluded": [
+                {"observation_index": idx, "reason": reason} for idx, reason in excluded
+            ]
+        },
+    )
 
 
 def time_or_state_markers(observations: Sequence[StepRun]) -> list[dict[str, Any]]:

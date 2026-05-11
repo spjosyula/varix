@@ -31,6 +31,49 @@ def _run(*step_ids: str) -> PipelineRun:
     )
 
 
+def test_analyze_emits_exclusion_note_when_classifiers_drop_observations() -> None:
+    """When provider_side excludes a run for missing fingerprint, the analysis-level
+    `notes` carries a one-line summary so it surfaces in run/show output."""
+    from varix.analysis import analyze
+
+    def _r(rid: str, fp: str | None) -> PipelineRun:
+        metadata = {"system_fingerprint": fp} if fp is not None else None
+        return PipelineRun(
+            run_id=rid,
+            step_runs=(StepRun(step_id="s1", inputs="i", output="o", provider_metadata=metadata),),
+            started_at=_T,
+            finished_at=_T,
+        )
+
+    runs = (_r("r1", "fp_a"), _r("r2", None), _r("r3", "fp_b"))
+    result = analyze(runs, AdapterCapabilities(exposes_fingerprint=True))
+    assert any("excluded" in note for note in result.notes)
+    assert any("varix explain" in note for note in result.notes)
+    # ASCII glyphs only — em-dashes belong in docstrings, not user-facing strings.
+    assert not any("—" in note for note in result.notes)
+
+
+def test_analyze_has_empty_notes_when_no_exclusions() -> None:
+    from varix.analysis import analyze
+
+    def _r(rid: str, fp: str) -> PipelineRun:
+        return PipelineRun(
+            run_id=rid,
+            step_runs=(
+                StepRun(
+                    step_id="s1", inputs="i", output="o",
+                    provider_metadata={"system_fingerprint": fp},
+                ),
+            ),
+            started_at=_T,
+            finished_at=_T,
+        )
+
+    runs = (_r("r1", "fp_a"), _r("r2", "fp_b"))
+    result = analyze(runs, AdapterCapabilities(exposes_fingerprint=True))
+    assert result.notes == ()
+
+
 @pytest.mark.asyncio
 async def test_deterministic_pipeline_produces_no_findings() -> None:
     adapter = FakeAdapter()

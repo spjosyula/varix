@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from varix.analysis._helpers import gather_step_runs, outputs_differ
+from varix.analysis._helpers import excluded_runs_evidence, gather_step_runs, outputs_differ
 from varix.core import (
     AdapterCapabilities,
     Classification,
@@ -60,6 +60,13 @@ class ProviderSideClassifier:
             ]
 
         fingerprints = [(sr.provider_metadata or {}).get(_FINGERPRINT_KEY) for sr in observations]
+        # Capability claimed fingerprints would be exposed; track any obs that lacked one
+        # so the finding's evidence is honest about partial-data exclusions.
+        excluded = [
+            (i, "no system_fingerprint")
+            for i, fp in enumerate(fingerprints)
+            if fp is None
+        ]
         present = [fp for fp in fingerprints if fp is not None]
         if len(present) < 2:
             return []
@@ -67,6 +74,17 @@ class ProviderSideClassifier:
         unique = sorted({str(fp) for fp in present})
         if len(unique) <= 1:
             return []
+
+        evidence_items: list[Evidence] = [
+            Evidence(
+                kind="fingerprint_diff",
+                description="system_fingerprint values observed across runs",
+                data={"fingerprints": [str(fp) for fp in present], "unique": unique},
+            ),
+        ]
+        ex_ev = excluded_runs_evidence(excluded)
+        if ex_ev is not None:
+            evidence_items.append(ex_ev)
 
         return [
             Finding(
@@ -76,12 +94,6 @@ class ProviderSideClassifier:
                 metric_name=metric.name(),
                 classification=Classification.PROVIDER_SIDE,
                 reason=f"system_fingerprint varied across runs: {unique}",
-                evidence=(
-                    Evidence(
-                        kind="fingerprint_diff",
-                        description="system_fingerprint values observed across runs",
-                        data={"fingerprints": [str(fp) for fp in present], "unique": unique},
-                    ),
-                ),
+                evidence=tuple(evidence_items),
             )
         ]

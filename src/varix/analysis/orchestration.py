@@ -39,10 +39,15 @@ from varix.core import (
 
 @dataclass(frozen=True, slots=True)
 class AnalysisResult:
-    """Combined verdict from Localizer + classifier registry."""
+    """Combined verdict from Localizer + classifier registry.
+
+    `notes` carries classifier-derived warnings (e.g. partial-data exclusions)
+    that callers should surface alongside their own notes (budget, n<2, etc.).
+    """
 
     outcomes: dict[str, LocalizationOutcome]
     findings: tuple[Finding, ...]
+    notes: tuple[str, ...] = ()
 
 
 def infer_capabilities(analysis: PipelineAnalysis) -> AdapterCapabilities:
@@ -133,4 +138,30 @@ def analyze(
         )
         findings.extend(step_findings)
 
-    return AnalysisResult(outcomes=dict(outcomes), findings=tuple(findings))
+    return AnalysisResult(
+        outcomes=dict(outcomes),
+        findings=tuple(findings),
+        notes=_summarize_exclusions(findings),
+    )
+
+
+def _summarize_exclusions(findings: Sequence[Finding]) -> tuple[str, ...]:
+    """One-line analysis-level summary when any classifier excluded observations.
+
+    The detail lives in per-finding `excluded_runs` evidence (surfaced by
+    `varix explain`); this note is the discovery-level breadcrumb pointing
+    users there.
+    """
+    total = sum(
+        len(ev.data.get("excluded", []))
+        for f in findings
+        for ev in f.evidence
+        if ev.kind == "excluded_runs"
+    )
+    if total == 0:
+        return ()
+    unit = "observation" if total == 1 else "observations"
+    return (
+        f"{total} {unit} excluded from classification due to missing data - "
+        "see varix explain for details",
+    )

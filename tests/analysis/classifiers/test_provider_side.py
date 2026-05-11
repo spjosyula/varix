@@ -60,6 +60,46 @@ def test_emits_high_when_fingerprints_differ() -> None:
     assert findings[0].evidence[0].data["unique"] == ["fp_a", "fp_b"]
 
 
+def test_emits_excluded_runs_evidence_when_some_observations_lack_fingerprint() -> None:
+    runs = _wrap(
+        _step(fingerprint="fp_a"),
+        _step(fingerprint=None),  # missing despite capability
+        _step(fingerprint="fp_b"),
+    )
+    findings = ProviderSideClassifier().classify(
+        step_id="s1",
+        localization=LocalizationOutcome.SOURCE,
+        runs=runs,
+        replays=[],
+        capabilities=AdapterCapabilities(exposes_fingerprint=True),
+        metric=_METRIC,
+    )
+    assert len(findings) == 1
+    f = findings[0]
+    kinds = [ev.kind for ev in f.evidence]
+    assert "fingerprint_diff" in kinds
+    assert "excluded_runs" in kinds
+    excluded_ev = next(ev for ev in f.evidence if ev.kind == "excluded_runs")
+    excluded = excluded_ev.data["excluded"]
+    assert len(excluded) == 1
+    assert excluded[0]["observation_index"] == 1
+    assert excluded[0]["reason"] == "no system_fingerprint"
+
+
+def test_no_excluded_runs_evidence_when_all_observations_have_fingerprint() -> None:
+    runs = _wrap(_step(fingerprint="fp_a"), _step(fingerprint="fp_b"))
+    findings = ProviderSideClassifier().classify(
+        step_id="s1",
+        localization=LocalizationOutcome.SOURCE,
+        runs=runs,
+        replays=[],
+        capabilities=AdapterCapabilities(exposes_fingerprint=True),
+        metric=_METRIC,
+    )
+    assert len(findings) == 1
+    assert all(ev.kind != "excluded_runs" for ev in findings[0].evidence)
+
+
 def test_abstains_when_fingerprints_match() -> None:
     runs = _wrap(_step(fingerprint="fp_a"), _step(fingerprint="fp_a"))
     findings = ProviderSideClassifier().classify(

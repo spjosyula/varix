@@ -301,6 +301,49 @@ def test_render_explain_unavailable_finding_says_could_not_classify() -> None:
     assert "adapter does not expose system_fingerprint" in rendered
 
 
+def test_render_explain_provider_side_renders_excluded_runs_note() -> None:
+    finding = Finding(
+        step_id="s1",
+        localization=LocalizationOutcome.SOURCE,
+        confidence=Confidence.HIGH,
+        metric_name="exact",
+        classification=Classification.PROVIDER_SIDE,
+        evidence=(
+            Evidence(
+                kind="fingerprint_diff",
+                description="x",
+                data={"fingerprints": ["fp_a", "fp_b"], "unique": ["fp_a", "fp_b"]},
+            ),
+            Evidence(
+                kind="excluded_runs",
+                description="1 observation(s) excluded due to missing data",
+                data={"excluded": [{"observation_index": 1, "reason": "no system_fingerprint"}]},
+            ),
+        ),
+    )
+    pr = PipelineRun(
+        run_id="r1",
+        step_runs=(StepRun(step_id="s1", inputs="i", output="o"),),
+        started_at=_T,
+        finished_at=_T,
+    )
+    analysis = PipelineAnalysis(
+        analysis_id="ex-id",
+        pipeline_name="fake",
+        n=3,
+        metric_name="exact",
+        schema_version=SCHEMA_VERSION,
+        runs=(pr, pr, pr),
+        findings=(finding,),
+        started_at=_T,
+        finished_at=_T,
+        total_cost=CostSnapshot(),
+    )
+    rendered = render_explain(analysis, "s1")
+    assert "1 of 3 runs excluded from this classifier" in rendered
+    assert "missing system_fingerprint" in rendered
+
+
 def test_render_explain_with_multiple_findings_renders_each_block() -> None:
     base = _make_analysis("abc", with_finding=True)
     extra = Finding(

@@ -88,7 +88,7 @@ def execute_run(
         finished_at=finished,
         total_cost=cost.snapshot(),
         step_replays={},
-        notes=tuple(notes),
+        notes=(*notes, *result.notes),
         capabilities=adapter.capabilities(),
     )
 

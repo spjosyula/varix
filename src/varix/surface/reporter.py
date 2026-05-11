@@ -398,16 +398,22 @@ def _gather_step_observations(runs: Sequence[PipelineRun], step_id: str) -> list
 
 def _explain_provider_side(finding: Finding, analysis: PipelineAnalysis, step_id: str) -> list[str]:
     fingerprints: list[str] = []
+    excluded: list[dict[str, Any]] = []
     for ev in finding.evidence:
         if ev.kind == "fingerprint_diff":
             fingerprints = [str(fp) for fp in ev.data.get("fingerprints", [])]
-            break
-    n_obs = len(fingerprints) if fingerprints else analysis.n
+        elif ev.kind == "excluded_runs":
+            excluded = list(ev.data.get("excluded", []))
+    # Compared count is the fingerprints we actually analyzed; total spans those
+    # plus any we had to drop due to missing data.
+    n_compared = len(fingerprints) if fingerprints else analysis.n
+    n_total = n_compared + len(excluded)
+    runs_phrase = f"{n_compared} {_runs_word(n_compared)}"
     lines = [
         _explain_headline(finding, step_id),
         "",
         "Why this classification:",
-        f"  Across {n_obs} {_runs_word(n_obs)} of `{step_id}`, system_fingerprint changed:",
+        f"  Across {runs_phrase} of `{step_id}`, system_fingerprint changed:",
         "",
     ]
     if fingerprints:
@@ -415,6 +421,12 @@ def _explain_provider_side(finding: Finding, analysis: PipelineAnalysis, step_id
         # Stable ordering: most-frequent first, name asc as tiebreak.
         for fp, count in sorted(counts.items(), key=lambda x: (-x[1], x[0])):
             lines.append(f"    {fp}   used in {count} {_runs_word(count)}")
+    if excluded:
+        lines.extend([
+            "",
+            f"  Note: {len(excluded)} of {n_total} {_runs_word(n_total)} excluded from this "
+            "classifier - missing system_fingerprint.",
+        ])
     lines.extend([
         "",
         "  Different fingerprints mean the provider routed your requests to",
