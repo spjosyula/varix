@@ -58,6 +58,18 @@ Open a pull request. The standard open-source flow:
 - Performance improvements
 - Tests for things that aren't covered
 
+## A note on the artifact schema
+
+varix saves every analysis as a JSON file in `~/.varix/runs/`, and a lot of varix's value (especially `varix replay`) rests on those files staying readable. So the schema in `src/varix/core/types.py` is load-bearing in a way most internal code isn't.
+
+The shape of it:
+
+- **Adding an optional field is fine.** Old artifacts work; new varix writes the new field; old varix ignores it.
+- **Adding a field that replay correctness depends on** needs a heuristic fallback in `varix.analysis.infer_capabilities` (or wherever the consumer lives), so legacy artifacts can still replay correctly. If no fallback is possible, replay should refuse cleanly on older artifacts rather than silently produce different findings.
+- **Changing or removing a field** bumps `SCHEMA_VERSION`, registers a stepwise migration in `src/varix/surface/storage.py:_migrate_to_current`, and adds the old version to `_KNOWN_VERSIONS`. Old artifacts never stop being readable.
+
+If your PR touches `PipelineAnalysis`, `Finding`, `Evidence`, or any other persisted type, mention which category your change falls in. See [docs/schema.md](docs/schema.md) for the current shape and the migration history.
+
 ## If you used AI
 
 Just say so in the PR description. One line is enough — which tool, and what you used it for:

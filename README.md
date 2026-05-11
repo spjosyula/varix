@@ -62,7 +62,7 @@ You'll see a short report in your terminal, a JSON artifact saved under `~/.vari
 
 # Cookbook
 
-Six recipes.
+Eight recipes.
 
 ## 1. Diagnose variance in a multi-step pipeline
 
@@ -104,7 +104,6 @@ class MyAgent:
 adapter = MyAgent()
 ```
 
-A complete production-shaped template lives in the dogfood folder; copy and adapt it.
 
 ## 2. Read the report
 
@@ -257,7 +256,39 @@ n=3 | $0.0007 | 14s | analysis 5dfcc218 | ran 2 hours ago
 
 The JSON is the source of truth — `show`/`explain`/`impact` all read it without re-running anything.
 
-## 6. Cap cost
+## 6. Replay an analysis (free, reproducible)
+
+`varix show` re-prints what varix wrote. `varix replay` does something different: it loads the saved runs and **re-runs the classifiers** against them. No LLM calls, no adapter import, no cost — just current varix asking "what would I say about this data today?"
+
+```powershell
+varix replay 5dfcc218-8f25-49c5-a8a2-6a513f740598
+```
+
+You'll see a preamble line plus the same shape as a fresh `varix run`, with `| replayed` in the receipt so you know nothing was newly billed:
+
+```
+replay of analysis 5dfcc218 from 2 hours ago.
+
+Found 1 source of nondeterminism in agent.py.
+
+  step `plan`  ->  prompt-side, propagates downstream
+
+n=3 | $0.0007 | 14s | analysis 5dfcc218 | replayed
+
+Next:
+  varix impact plan       see how much this changes your output
+  varix explain plan      see the evidence varix used
+```
+
+Why this matters in practice:
+
+- **Debug for free after the first run.** Once you've paid the LLM bill once, iterate on the analysis as much as you like.
+- **Share artifacts with teammates.** Send someone the `~/.varix/runs/<id>.json` file and they can replay it — no need to install your adapter or pay any cost themselves.
+- **The artifact is the unit of work.** Old artifacts stay readable forever; varix migrates them forward when the schema bumps.
+
+> Note: artifacts contain your prompts, tool calls, and model outputs verbatim. Review before sharing them externally.
+
+## 7. Cap cost
 
 Always set `--max-cost`:
 
@@ -267,7 +298,7 @@ varix run agent.py --input "..." -n 5 --max-cost 0.10
 
 If a run pushes total spend over the budget, varix halts mid-loop, writes a partial artifact with the runs that completed, and exits with a clear note in the report's `WARNING:` block. No surprise bills.
 
-## 7. Single-call shortcut (no custom adapter needed)
+## 8. Single-call shortcut (no custom adapter needed)
 
 If you just want to check whether a single Gemini call is reproducible — no multi-step pipeline:
 
@@ -292,6 +323,7 @@ varix run <pipeline> --input "..." [-n N] [--max-cost D]   localize + classify
 varix impact <step-id>                                      quantify downstream effect
 varix explain <step-id>                                     show evidence for a finding
 varix show <analysis-id>                                    re-render a past report
+varix replay <analysis-id>                                  re-classify a saved artifact (free)
 ```
 
 `<pipeline>` accepts either a file path (`varix run agent.py`) or an importable string (`varix run my_module:my_pipeline`).
