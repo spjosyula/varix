@@ -89,6 +89,7 @@ def execute_run(
         total_cost=cost.snapshot(),
         step_replays={},
         notes=tuple(notes),
+        capabilities=adapter.capabilities(),
     )
 
     resolved_dir = resolve_runs_dir(base_dir)

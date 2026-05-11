@@ -29,6 +29,7 @@ from varix.core import (
     ExactMatch,
     Finding,
     LocalizationOutcome,
+    PipelineAnalysis,
     PipelineRun,
     StepRun,
     StructuralMismatch,
@@ -42,6 +43,36 @@ class AnalysisResult:
 
     outcomes: dict[str, LocalizationOutcome]
     findings: tuple[Finding, ...]
+
+
+def infer_capabilities(analysis: PipelineAnalysis) -> AdapterCapabilities:
+    """Best-effort reconstruction of `AdapterCapabilities` from a stored analysis.
+
+    Used to make legacy schema-0.1 artifacts replayable: those don't carry
+    `capabilities`, so we look at the runs themselves to decide what the
+    original adapter must have exposed. Heuristic only — when the recorded
+    field is present, prefer that over this.
+
+    `supports_replay` is best-effort: an adapter that *could* replay but never
+    did leaves no signal in the runs. The heuristic infers True only when
+    `step_replays` is populated. This is safe because no current classifier
+    branches on `supports_replay`; if that ever changes, replay correctness
+    against legacy artifacts will need stronger evidence than a heuristic.
+    """
+    exposes_fingerprint = any(
+        sr.provider_metadata is not None and "system_fingerprint" in sr.provider_metadata
+        for run in analysis.runs
+        for sr in run.step_runs
+    )
+    exposes_tool_calls = any(
+        bool(sr.tool_calls) for run in analysis.runs for sr in run.step_runs
+    )
+    supports_replay = bool(analysis.step_replays)
+    return AdapterCapabilities(
+        exposes_fingerprint=exposes_fingerprint,
+        exposes_tool_calls=exposes_tool_calls,
+        supports_replay=supports_replay,
+    )
 
 
 def detect_structural_mismatch(runs: Sequence[PipelineRun]) -> None:

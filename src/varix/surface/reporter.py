@@ -11,6 +11,7 @@ import os
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from datetime import datetime
+from typing import Any
 
 from varix.analysis import ImpactBehavior, ImpactEstimator, ImpactReport, Localizer
 from varix.core import (
@@ -21,6 +22,7 @@ from varix.core import (
     LocalizationOutcome,
     PipelineAnalysis,
     PipelineRun,
+    StepRun,
 )
 
 __all__ = ["render_analysis", "render_explain", "render_impact"]
@@ -383,9 +385,9 @@ def _explain_headline(finding: Finding, step_id: str) -> str:
     )
 
 
-def _gather_step_observations(runs: Sequence[PipelineRun], step_id: str) -> list:
+def _gather_step_observations(runs: Sequence[PipelineRun], step_id: str) -> list[StepRun]:
     """Collect each run's StepRun matching step_id (first occurrence per run)."""
-    obs = []
+    obs: list[StepRun] = []
     for r in runs:
         for sr in r.step_runs:
             if sr.step_id == step_id:
@@ -467,7 +469,7 @@ def _explain_prompt_side(finding: Finding, analysis: PipelineAnalysis, step_id: 
 
 
 def _explain_tool_side(finding: Finding, analysis: PipelineAnalysis, step_id: str) -> list[str]:
-    diffs: list[dict] = []
+    diffs: list[dict[str, Any]] = []
     for ev in finding.evidence:
         if ev.kind == "tool_result_diff":
             diffs = list(ev.data.get("diffs", []))

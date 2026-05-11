@@ -242,6 +242,63 @@ def test_pipeline_analysis_roundtrip_concrete() -> None:
     assert PipelineAnalysis.from_dict(analysis.to_dict()) == analysis
 
 
+def test_pipeline_analysis_round_trips_capabilities() -> None:
+    from varix.core import AdapterCapabilities
+
+    sr = StepRun(step_id="s1", inputs="i", output="o")
+    run = PipelineRun(
+        run_id="r1",
+        step_runs=(sr,),
+        started_at=datetime(2026, 5, 8, 12, 0, 0, tzinfo=UTC),
+        finished_at=datetime(2026, 5, 8, 12, 1, 0, tzinfo=UTC),
+    )
+    analysis = PipelineAnalysis(
+        analysis_id="cap-id",
+        pipeline_name="example.py",
+        n=1,
+        metric_name="exact",
+        schema_version=SCHEMA_VERSION,
+        runs=(run,),
+        findings=(),
+        started_at=datetime(2026, 5, 8, 12, 0, 0, tzinfo=UTC),
+        finished_at=datetime(2026, 5, 8, 12, 1, 0, tzinfo=UTC),
+        capabilities=AdapterCapabilities(
+            exposes_fingerprint=True, exposes_tool_calls=False, supports_replay=True
+        ),
+    )
+    restored = PipelineAnalysis.from_dict(analysis.to_dict())
+    assert restored.capabilities == analysis.capabilities
+
+
+def test_legacy_v0_1_artifact_loads_with_capabilities_none() -> None:
+    """Schema 0.1 artifacts predate the capabilities field; loading must not fail."""
+    sr = StepRun(step_id="s1", inputs="i", output="o")
+    run = PipelineRun(
+        run_id="r1",
+        step_runs=(sr,),
+        started_at=datetime(2026, 5, 8, 12, 0, 0, tzinfo=UTC),
+        finished_at=datetime(2026, 5, 8, 12, 1, 0, tzinfo=UTC),
+    )
+    analysis = PipelineAnalysis(
+        analysis_id="legacy-id",
+        pipeline_name="example.py",
+        n=1,
+        metric_name="exact",
+        schema_version="0.1",
+        runs=(run,),
+        findings=(),
+        started_at=datetime(2026, 5, 8, 12, 0, 0, tzinfo=UTC),
+        finished_at=datetime(2026, 5, 8, 12, 1, 0, tzinfo=UTC),
+    )
+    legacy_data = analysis.to_dict()
+    del legacy_data["capabilities"]
+    assert "capabilities" not in legacy_data
+
+    restored = PipelineAnalysis.from_dict(legacy_data)
+    assert restored.capabilities is None
+    assert restored.schema_version == "0.1"
+
+
 def test_finding_classification_optional() -> None:
     f = Finding(
         step_id="s1",

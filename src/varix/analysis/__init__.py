@@ -10,6 +10,7 @@ from varix.analysis.orchestration import (
     AnalysisResult,
     analyze,
     detect_structural_mismatch,
+    infer_capabilities,
 )
 from varix.analysis.registry import Classifier, ClassifierRegistry
 
@@ -23,4 +24,5 @@ __all__ = [
     "Localizer",
     "analyze",
     "detect_structural_mismatch",
+    "infer_capabilities",
 ]

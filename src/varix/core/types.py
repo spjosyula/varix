@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-SCHEMA_VERSION = "0.1"
+SCHEMA_VERSION = "0.2"
 
 
 class Confidence(enum.Enum):
@@ -317,6 +317,10 @@ class PipelineAnalysis:
     total_cost: CostSnapshot = field(default_factory=CostSnapshot)
     step_replays: dict[str, tuple[StepRun, ...]] = field(default_factory=dict)
     notes: tuple[str, ...] = ()
+    # Recorded as of the run that produced this artifact; absent on schema 0.1
+    # artifacts. Consumers that need capabilities (e.g. replay) fall back to
+    # `varix.analysis.infer_capabilities` when this is None.
+    capabilities: AdapterCapabilities | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -335,10 +339,12 @@ class PipelineAnalysis:
                 for step_id, replays in self.step_replays.items()
             },
             "notes": list(self.notes),
+            "capabilities": self.capabilities.to_dict() if self.capabilities is not None else None,
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> PipelineAnalysis:
+        cap_data = data.get("capabilities")
         return cls(
             analysis_id=str(data["analysis_id"]),
             pipeline_name=str(data["pipeline_name"]),
@@ -355,4 +361,5 @@ class PipelineAnalysis:
                 for step_id, replays in data.get("step_replays", {}).items()
             },
             notes=tuple(str(note) for note in data.get("notes", [])),
+            capabilities=AdapterCapabilities.from_dict(cap_data) if cap_data is not None else None,
         )
