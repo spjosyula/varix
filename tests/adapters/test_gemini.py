@@ -42,8 +42,8 @@ class _FakeAioModels:
         self._response = response
         self.calls: list[dict[str, Any]] = []
 
-    async def generate_content(self, *, model: str, contents: str) -> Any:
-        self.calls.append({"model": model, "contents": contents})
+    async def generate_content(self, *, model: str, contents: str, config: Any = None) -> Any:
+        self.calls.append({"model": model, "contents": contents, "config": config})
         if isinstance(self._response, BaseException):
             raise self._response
         return self._response
@@ -150,7 +150,10 @@ async def test_run_pipeline_records_output_and_fingerprint() -> None:
     assert sr.step_id == "response"
     assert sr.inputs == "Why is the sky blue?"
     assert "Rayleigh" in str(sr.output)
-    assert sr.provider_metadata == {"system_fingerprint": "gemini-2.5-flash-lite-001"}
+    assert sr.provider_metadata == {
+        "system_fingerprint": "gemini-2.5-flash-lite-001",
+        "temperature": 0.0,
+    }
 
 
 @pytest.mark.asyncio
@@ -184,12 +187,13 @@ async def test_run_pipeline_passes_configured_model_to_client() -> None:
 
 
 @pytest.mark.asyncio
-async def test_run_pipeline_omits_metadata_when_no_fingerprint() -> None:
+async def test_run_pipeline_records_temperature_when_no_fingerprint() -> None:
     response = _FakeResponse(text="ok", model_version=None, usage_metadata=_FakeUsage(0, 0))
     adapter = GeminiSingleCallAdapter(client=_FakeClient(response))
     run = await adapter.run_pipeline("hi")
-    # Empty metadata dict collapses to None so the JSON artifact stays clean.
-    assert run.step_runs[0].provider_metadata is None
+    # Even without a fingerprint, the resolved temperature is recorded so
+    # future replays know what conditions produced the artifact.
+    assert run.step_runs[0].provider_metadata == {"temperature": 0.0}
 
 
 @pytest.mark.asyncio
@@ -215,7 +219,9 @@ class _IntermittentModels:
         self._succeed_for = succeed_for
         self._exc = exc
 
-    async def generate_content(self, *, model: str, contents: str) -> _FakeResponse:
+    async def generate_content(
+        self, *, model: str, contents: str, config: Any = None
+    ) -> _FakeResponse:
         self._calls += 1
         if self._calls > self._succeed_for:
             raise self._exc
@@ -238,42 +244,141 @@ async def test_mid_loop_sdk_error_surfaces_as_run_failed_with_partial_runs() -> 
     assert "dns failed" in str(ei.value)
 
 
-# --- seed parameter is accepted but ignored (with one-shot warning) ---------
+# --- temperature default & resolution ---------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_run_pipeline_warns_when_seed_passed(caplog: pytest.LogCaptureFixture) -> None:
-    """Protocol allows passing a seed; we don't honor it. Surface that fact."""
-    adapter = GeminiSingleCallAdapter(client=_FakeClient(_ok_response()))
-    with caplog.at_level(logging.WARNING, logger="varix.adapters.gemini"):
-        await adapter.run_pipeline("hi", seed=42)
-    assert "seed=42" in caplog.text
-    assert "ignored" in caplog.text
+async def test_temperature_defaults_to_zero_in_sdk_config() -> None:
+    """varix's diagnostic identity depends on temperature=0 being the default."""
+    fake = _FakeClient(_ok_response())
+    adapter = GeminiSingleCallAdapter(client=fake)
+    await adapter.run_pipeline("hi")
+    cfg = fake.aio.models.calls[0]["config"]
+    assert cfg.temperature == 0.0
 
 
 @pytest.mark.asyncio
-async def test_run_pipeline_seed_warning_only_fires_once(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """Don't spam the user with one warning per run in an n=10 loop."""
-    adapter = GeminiSingleCallAdapter(client=_FakeClient(_ok_response()))
-    with caplog.at_level(logging.WARNING, logger="varix.adapters.gemini"):
-        await adapter.run_pipeline("hi", seed=42)
-        await adapter.run_pipeline("hi", seed=42)
-        await adapter.run_pipeline("hi", seed=99)
-    seed_warnings = [r for r in caplog.records if "ignored" in r.getMessage()]
-    assert len(seed_warnings) == 1
+async def test_temperature_kwarg_overrides_default() -> None:
+    fake = _FakeClient(_ok_response())
+    adapter = GeminiSingleCallAdapter(client=fake, temperature=0.7)
+    await adapter.run_pipeline("hi")
+    assert fake.aio.models.calls[0]["config"].temperature == 0.7
 
 
 @pytest.mark.asyncio
-async def test_run_pipeline_no_warning_when_seed_is_none(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """The varix runner currently passes seed=None; that path must stay quiet."""
+async def test_temperature_kwarg_wins_over_generation_config() -> None:
+    """The kwarg is varix's opinionated lane; the dict is pass-through."""
+    fake = _FakeClient(_ok_response())
+    adapter = GeminiSingleCallAdapter(
+        client=fake,
+        temperature=0.7,
+        generation_config={"temperature": 0.3},
+    )
+    await adapter.run_pipeline("hi")
+    assert fake.aio.models.calls[0]["config"].temperature == 0.7
+
+
+@pytest.mark.asyncio
+async def test_generation_config_without_temperature_still_gets_default() -> None:
+    """A user passing only top_p still gets temperature=0; default isn't conditional."""
+    fake = _FakeClient(_ok_response())
+    adapter = GeminiSingleCallAdapter(
+        client=fake,
+        generation_config={"top_p": 0.9},
+    )
+    await adapter.run_pipeline("hi")
+    cfg = fake.aio.models.calls[0]["config"]
+    assert cfg.temperature == 0.0
+    assert cfg.top_p == 0.9
+
+
+@pytest.mark.asyncio
+async def test_resolved_temperature_recorded_in_provider_metadata() -> None:
+    fake = _FakeClient(_ok_response())
+    adapter = GeminiSingleCallAdapter(client=fake, temperature=0.5)
+    run = await adapter.run_pipeline("hi")
+    assert run.step_runs[0].provider_metadata == {
+        "system_fingerprint": "gemini-2.5-flash-lite-001",
+        "temperature": 0.5,
+    }
+
+
+# --- generation_config pass-through ------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_generation_config_passes_through_to_sdk() -> None:
+    fake = _FakeClient(_ok_response())
+    adapter = GeminiSingleCallAdapter(
+        client=fake,
+        generation_config={"top_p": 0.9, "max_output_tokens": 100},
+    )
+    await adapter.run_pipeline("hi")
+    cfg = fake.aio.models.calls[0]["config"]
+    assert cfg.top_p == 0.9
+    assert cfg.max_output_tokens == 100
+
+
+# --- timeout -----------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_timeout_defaults_to_60_seconds() -> None:
+    """SDK takes milliseconds; user-facing API is seconds."""
+    fake = _FakeClient(_ok_response())
+    adapter = GeminiSingleCallAdapter(client=fake)
+    await adapter.run_pipeline("hi")
+    http_opts = fake.aio.models.calls[0]["config"].http_options
+    assert http_opts.timeout == 60_000
+
+
+@pytest.mark.asyncio
+async def test_timeout_kwarg_honored() -> None:
+    fake = _FakeClient(_ok_response())
+    adapter = GeminiSingleCallAdapter(client=fake, timeout=10.0)
+    await adapter.run_pipeline("hi")
+    assert fake.aio.models.calls[0]["config"].http_options.timeout == 10_000
+
+
+# --- seed forwarding ---------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_seed_forwarded_to_sdk_when_provided() -> None:
+    fake = _FakeClient(_ok_response())
+    adapter = GeminiSingleCallAdapter(client=fake)
+    run = await adapter.run_pipeline("hi", seed=42)
+    assert fake.aio.models.calls[0]["config"].seed == 42
+    # StepRun.seed records what was used so replays know the conditions.
+    assert run.step_runs[0].seed == 42
+
+
+@pytest.mark.asyncio
+async def test_seed_none_means_no_seed_in_config() -> None:
+    """The runner passes seed=None today; that path must not inject a seed."""
+    fake = _FakeClient(_ok_response())
+    adapter = GeminiSingleCallAdapter(client=fake)
+    run = await adapter.run_pipeline("hi")
+    assert fake.aio.models.calls[0]["config"].seed is None
+    assert run.step_runs[0].seed is None
+
+
+@pytest.mark.asyncio
+async def test_per_call_seed_overrides_generation_config_seed() -> None:
+    """Per-call seed is the more specific signal; it wins."""
+    fake = _FakeClient(_ok_response())
+    adapter = GeminiSingleCallAdapter(client=fake, generation_config={"seed": 1})
+    await adapter.run_pipeline("hi", seed=999)
+    assert fake.aio.models.calls[0]["config"].seed == 999
+
+
+@pytest.mark.asyncio
+async def test_seed_no_longer_warns(caplog: pytest.LogCaptureFixture) -> None:
+    """Forwarding is the new behavior; the old ignored-seed warning is gone."""
     adapter = GeminiSingleCallAdapter(client=_FakeClient(_ok_response()))
     with caplog.at_level(logging.WARNING, logger="varix.adapters.gemini"):
-        await adapter.run_pipeline("hi")
-    assert not any("seed" in r.getMessage() for r in caplog.records)
+        await adapter.run_pipeline("hi", seed=42)
+    assert not any("ignored" in r.getMessage() for r in caplog.records)
 
 
 # --- Replay refusal ----------------------------------------------------------

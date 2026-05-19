@@ -4,6 +4,17 @@ Sends one prompt to a Gemini model and returns the response as a one-step
 pipeline. For multi-step agents, compose this adapter (or its `_call` logic)
 into your own `Adapter` class.
 
+`temperature` defaults to 0.0 because varix's purpose is diagnosing
+nondeterminism; variance at higher temperatures is sampling, not pathology.
+Override explicitly to test at production temperatures.
+
+API shape:
+    - `temperature` is a top-level kwarg (varix has an opinion here).
+    - Every other generation parameter goes through `generation_config`,
+      a pass-through dict (`top_p`, `max_output_tokens`, etc.).
+    - When both are set, the `temperature` kwarg wins.
+    - `seed` is per-invocation: pass it to `run_pipeline(input, seed=...)`.
+
 Capabilities:
     exposes_fingerprint=True   `model_version` from Gemini's response is mapped
                                to `system_fingerprint` for the provider classifier.
@@ -17,9 +28,6 @@ Caveats:
       different model, or `--max-cost` enforcement will be wrong. A warning
       is logged on construction if the model differs from default but rates
       do not.
-    - `seed` is accepted for protocol conformance but not forwarded; Gemini's
-      `generate_content` does not currently take a seed. A warning is logged
-      the first time a non-None seed is passed.
 
 Requires `google-genai`. Install with `pip install varix[gemini]`.
 """
@@ -34,6 +42,7 @@ from typing import Any, Final
 
 try:
     from google import genai
+    from google.genai import types as genai_types
 except ImportError as exc:
     raise ImportError() from exc
 
@@ -77,8 +86,11 @@ class GeminiSingleCallAdapter:
 
     def __init__(
         self,
-        *,
         model: str = _DEFAULT_MODEL,
+        *,
+        temperature: float = 0.0,
+        generation_config: dict[str, Any] | None = None,
+        timeout: float = 60.0,
         client: Any = None,
         input_dollars_per_token: float = _DEFAULT_INPUT_DOLLARS_PER_TOKEN,
         output_dollars_per_token: float = _DEFAULT_OUTPUT_DOLLARS_PER_TOKEN,
@@ -93,9 +105,11 @@ class GeminiSingleCallAdapter:
             client = genai.Client(api_key=api_key)
         self._client = client
         self._model = model
+        self._temperature = temperature
+        self._generation_config = dict(generation_config) if generation_config else {}
+        self._timeout = timeout
         self._input_rate = input_dollars_per_token
         self._output_rate = output_dollars_per_token
-        self._warned_seed = False
 
         # Default rates apply to _DEFAULT_MODEL only. Warn if the user picks a
         # different model without overriding rates, so --max-cost stays honest.
@@ -123,14 +137,9 @@ class GeminiSingleCallAdapter:
         return StepGraph(steps=_STEPS)
 
     async def run_pipeline(self, pipeline_input: Any, seed: int | None = None) -> PipelineRun:
-        if seed is not None and not self._warned_seed:
-            # Accepted for protocol conformance but not forwarded — Gemini's
-            # generate_content does not currently take a seed.
-            _LOGGER.warning("seed=%r passed but ignored; Gemini API does not honor it.", seed)
-            self._warned_seed = True
         prompt = str(pipeline_input)
         started = datetime.now(tz=UTC)
-        result = await self._call(prompt)
+        result = await self._call(prompt, seed=seed)
         finished = datetime.now(tz=UTC)
         return PipelineRun(
             run_id=f"r-{started.timestamp()}",
@@ -141,11 +150,13 @@ class GeminiSingleCallAdapter:
                     output=result.output,
                     provider_metadata=result.metadata or None,
                     cost=result.cost,
+                    seed=seed,
                 ),
             ),
             started_at=started,
             finished_at=finished,
             cost=result.cost,
+            seed=seed,
         )
 
     async def replay_step(
@@ -155,13 +166,15 @@ class GeminiSingleCallAdapter:
             "GeminiSingleCallAdapter does not support replay (supports_replay=False)"
         )
 
-    async def _call(self, prompt: str) -> _CallResult:
+    async def _call(self, prompt: str, *, seed: int | None = None) -> _CallResult:
         # SDK errors (genai_errors.APIError, network errors) propagate unwrapped:
         # the runner catches them as non-VarixError exceptions and surfaces them
         # via RunFailed with the partial_runs that succeeded before the failure.
+        config = self._build_config(seed=seed)
         resp = await self._client.aio.models.generate_content(
             model=self._model,
             contents=prompt,
+            config=config,
         )
 
         usage = getattr(resp, "usage_metadata", None)
@@ -173,7 +186,7 @@ class GeminiSingleCallAdapter:
             input_tokens = getattr(usage, "prompt_token_count", None) or 0
             output_tokens = getattr(usage, "candidates_token_count", None) or 0
 
-        metadata: dict[str, Any] = {}
+        metadata: dict[str, Any] = {"temperature": self._temperature}
         model_version = getattr(resp, "model_version", None)
         if model_version:
             metadata["system_fingerprint"] = str(model_version)
@@ -187,3 +200,16 @@ class GeminiSingleCallAdapter:
                 dollars=(input_tokens * self._input_rate + output_tokens * self._output_rate),
             ),
         )
+
+    def _build_config(self, *, seed: int | None) -> genai_types.GenerateContentConfig:
+        """Merge generation_config + temperature + seed into a `GenerateContentConfig`.
+
+        Resolution: the `temperature` kwarg always wins over any temperature in
+        `generation_config`. A per-call `seed` wins over a `seed` in
+        `generation_config`.
+        """
+        merged: dict[str, Any] = {**self._generation_config, "temperature": self._temperature}
+        if seed is not None:
+            merged["seed"] = seed
+        merged["http_options"] = genai_types.HttpOptions(timeout=int(self._timeout * 1000))
+        return genai_types.GenerateContentConfig(**merged)
