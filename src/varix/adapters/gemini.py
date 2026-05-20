@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import logging
 import os
+import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Final
@@ -44,7 +45,10 @@ try:
     from google import genai
     from google.genai import types as genai_types
 except ImportError as exc:
-    raise ImportError() from exc
+    raise ImportError(
+        "google-genai is required for GeminiSingleCallAdapter. "
+        f"Install with `pip install varix[gemini]`. Original error: {exc}"
+    ) from exc
 
 from varix.core import (
     AdapterCapabilities,
@@ -61,7 +65,9 @@ __all__ = ["GeminiSingleCallAdapter"]
 
 _LOGGER: Final = logging.getLogger(__name__)
 
-# Cheapest GA Gemini Flash variant
+# Cheapest GA Gemini Flash variant. Rates audited 2026-05-20 against
+# https://ai.google.dev/pricing. If --max-cost figures seem off, re-verify
+# pricing and bump the date when the constants change.
 _DEFAULT_MODEL: Final = "gemini-2.5-flash-lite"
 _DEFAULT_INPUT_DOLLARS_PER_TOKEN: Final = 0.10 / 1_000_000
 _DEFAULT_OUTPUT_DOLLARS_PER_TOKEN: Final = 0.40 / 1_000_000
@@ -142,7 +148,7 @@ class GeminiSingleCallAdapter:
         result = await self._call(prompt, seed=seed)
         finished = datetime.now(tz=UTC)
         return PipelineRun(
-            run_id=f"r-{started.timestamp()}",
+            run_id=str(uuid.uuid4()),
             step_runs=(
                 StepRun(
                     step_id=_RESPONSE_STEP_ID,
@@ -206,10 +212,14 @@ class GeminiSingleCallAdapter:
 
         Resolution: the `temperature` kwarg always wins over any temperature in
         `generation_config`. A per-call `seed` wins over a `seed` in
-        `generation_config`.
+        `generation_config`. If the user supplies `http_options` themselves
+        (e.g. for `base_url` or a custom `httpx_client`), it is preserved
+        unchanged; the adapter's `timeout` only takes effect when no
+        `http_options` is present.
         """
         merged: dict[str, Any] = {**self._generation_config, "temperature": self._temperature}
         if seed is not None:
             merged["seed"] = seed
-        merged["http_options"] = genai_types.HttpOptions(timeout=int(self._timeout * 1000))
+        if "http_options" not in merged:
+            merged["http_options"] = genai_types.HttpOptions(timeout=int(self._timeout * 1000))
         return genai_types.GenerateContentConfig(**merged)

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
+import uuid
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
@@ -15,6 +16,8 @@ from typing import Any
 import pytest
 
 pytest.importorskip("google.genai")
+
+from google.genai import types as genai_types
 
 from varix.adapters.gemini import GeminiSingleCallAdapter
 from varix.core import Adapter, AdapterError, CapabilityMissing, RunFailed
@@ -379,6 +382,41 @@ async def test_seed_no_longer_warns(caplog: pytest.LogCaptureFixture) -> None:
     with caplog.at_level(logging.WARNING, logger="varix.adapters.gemini"):
         await adapter.run_pipeline("hi", seed=42)
     assert not any("ignored" in r.getMessage() for r in caplog.records)
+
+
+# --- run_id is a UUID, not a timestamp --------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_run_id_is_uuid_and_unique_per_call() -> None:
+    """Timestamp-based IDs collided when two runs started in the same second.
+    UUID4s never do."""
+    adapter = GeminiSingleCallAdapter(client=_FakeClient(_ok_response()))
+    run1 = await adapter.run_pipeline("hi")
+    run2 = await adapter.run_pipeline("hi")
+    # Both must parse as valid UUIDs and must differ.
+    uuid.UUID(run1.run_id)
+    uuid.UUID(run2.run_id)
+    assert run1.run_id != run2.run_id
+
+
+# --- http_options passed in generation_config is preserved -------------------
+
+
+@pytest.mark.asyncio
+async def test_http_options_in_generation_config_is_preserved() -> None:
+    """When the user provides http_options, the adapter's timeout default
+    must not silently overwrite it. Power users set base_url / headers here."""
+    fake = _FakeClient(_ok_response())
+    user_http = genai_types.HttpOptions(timeout=5000)  # 5s, user's choice
+    adapter = GeminiSingleCallAdapter(
+        client=fake,
+        generation_config={"http_options": user_http},
+        timeout=99.0,  # ignored when user supplies http_options
+    )
+    await adapter.run_pipeline("hi")
+    sent_http = fake.aio.models.calls[0]["config"].http_options
+    assert sent_http.timeout == 5000  # user's setting wins; 99_000 not applied
 
 
 # --- Replay refusal ----------------------------------------------------------
