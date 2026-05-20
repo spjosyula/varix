@@ -25,6 +25,7 @@ from varix.core.protocol_test_suite import (
     check_pipeline_structure_stable,
     check_replay_step_does_not_mutate_inputs,
     check_run_pipeline_aligns_with_structure,
+    check_step_inputs_track_upstream_state,
     validate_adapter,
 )
 
@@ -162,3 +163,107 @@ async def test_replay_check_skipped_when_capability_false() -> None:
             raise AssertionError("should not be called")
 
     await check_replay_step_does_not_mutate_inputs(_NoReplay(), {"q": "hi"})
+
+
+# --- StepRun.inputs contract -------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_clean_adapter_satisfies_inputs_contract() -> None:
+    """The base _CleanAdapter passes upstream state through to inputs cleanly."""
+    await check_step_inputs_track_upstream_state(_CleanAdapter(), {"q": "hi"})
+
+
+@pytest.mark.asyncio
+async def test_structural_variance_across_runs_is_caught() -> None:
+    """run_pipeline produces a different step sequence on the second call —
+    structure must be deterministic for the same input."""
+
+    class _AlternatingStructure(_CleanAdapter):
+        _calls = 0
+
+        async def run_pipeline(
+            self, pipeline_input: Any, seed: int | None = None
+        ) -> PipelineRun:
+            type(self)._calls += 1
+            now = _now()
+            if type(self)._calls % 2 == 0:
+                # Truncated second run.
+                step_runs: tuple[StepRun, ...] = (
+                    StepRun(step_id="s1", inputs=pipeline_input, output="planned"),
+                )
+            else:
+                step_runs = (
+                    StepRun(step_id="s1", inputs=pipeline_input, output="planned"),
+                    StepRun(step_id="s2", inputs="planned", output="answered"),
+                )
+            return PipelineRun(
+                run_id="r", step_runs=step_runs, started_at=now, finished_at=now
+            )
+
+    with pytest.raises(AdapterError, match="different step sequences"):
+        await check_step_inputs_track_upstream_state(
+            _AlternatingStructure(), {"q": "hi"}
+        )
+
+
+@pytest.mark.asyncio
+async def test_inputs_leaking_run_local_state_is_caught() -> None:
+    """Adapter that bakes a per-call counter into StepRun.inputs is leaking
+    run-local state — the exact footgun the dogfood tripped earlier."""
+
+    class _LeakyInputs(_CleanAdapter):
+        _calls = 0
+
+        async def run_pipeline(
+            self, pipeline_input: Any, seed: int | None = None
+        ) -> PipelineRun:
+            type(self)._calls += 1
+            n = type(self)._calls
+            now = _now()
+            return PipelineRun(
+                run_id=f"r{n}",
+                step_runs=(
+                    StepRun(
+                        step_id="s1",
+                        # Bug: per-call value bleeds into the logical input.
+                        inputs=f"prompt-with-counter-{n}",
+                        output="planned",
+                    ),
+                ),
+                started_at=now,
+                finished_at=now,
+            )
+
+    with pytest.raises(AdapterError, match="inputs varied"):
+        await check_step_inputs_track_upstream_state(_LeakyInputs(), {"q": "hi"})
+
+
+@pytest.mark.asyncio
+async def test_downstream_cascade_does_not_trip_inputs_contract() -> None:
+    """When step 0 legitimately varies across runs, step 1's inputs cascade
+    differently — that's correct and must not be flagged."""
+
+    class _CascadingVariance(_CleanAdapter):
+        _calls = 0
+
+        async def run_pipeline(
+            self, pipeline_input: Any, seed: int | None = None
+        ) -> PipelineRun:
+            type(self)._calls += 1
+            n = type(self)._calls
+            step0_output = f"planned-v{n}"  # legitimate upstream variance
+            now = _now()
+            return PipelineRun(
+                run_id=f"r{n}",
+                step_runs=(
+                    StepRun(step_id="s1", inputs=pipeline_input, output=step0_output),
+                    StepRun(step_id="s2", inputs=step0_output, output="answered"),
+                ),
+                started_at=now,
+                finished_at=now,
+            )
+
+    # s2.inputs differs across runs, but only because s1.output legitimately
+    # varied — the conditional invariant must allow this.
+    await check_step_inputs_track_upstream_state(_CascadingVariance(), {"q": "hi"})

@@ -166,8 +166,14 @@ class ToolCall:
 class StepRun:
     """One execution of a single step, captured for analysis.
 
-    `inputs` and `output` are required to be JSON-serializable. varix does
-    not validate this; serialization will fail at storage time if violated.
+    `inputs` is the *logical pipeline input* — the data that flowed in from
+    upstream (or `pipeline_input` for the first step). Not the LLM prompt,
+    not a fresh timestamp, not run-local state. Two runs with equivalent
+    upstream outputs must produce equivalent `inputs`; otherwise SOURCE
+    steps get mis-classified as DOWNSTREAM. Enforced by
+    `protocol_test_suite.check_step_inputs_track_upstream_state`.
+
+    `inputs` and `output` must be JSON-serializable; storage fails otherwise.
     """
 
     step_id: str
