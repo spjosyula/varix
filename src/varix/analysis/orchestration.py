@@ -167,10 +167,12 @@ def analyze(
                 ]
         findings.extend(step_findings)
 
+    capped_findings, cap_notes = _cap_confidence_for_weak_evidence(findings, len(runs))
+
     return AnalysisResult(
         outcomes=dict(outcomes),
-        findings=tuple(findings),
-        notes=_summarize_exclusions(findings),
+        findings=capped_findings,
+        notes=(*_summarize_exclusions(capped_findings), *cap_notes),
     )
 
 
@@ -219,6 +221,36 @@ def _replay_evidence(replays: Sequence[StepRun], metric: VarianceMetric) -> Evid
             f"observed {len(unique)} unique outputs."
         ),
         data={"replay_count": len(replays), "unique_output_count": len(unique)},
+    )
+
+
+def _cap_confidence_for_weak_evidence(
+    findings: Sequence[Finding], n_runs: int
+) -> tuple[tuple[Finding, ...], tuple[str, ...]]:
+    """Downgrade HIGH to MEDIUM when N<3 runs back the finding.
+
+    Findings carrying `replay_disambiguation` evidence are exempt — their
+    replays add fixed-input observations beyond the runs themselves. Note
+    is emitted only when at least one finding was actually capped.
+    """
+    if n_runs >= 3:
+        return tuple(findings), ()
+
+    out: list[Finding] = []
+    any_capped = False
+    for f in findings:
+        has_replay_ev = any(ev.kind == "replay_disambiguation" for ev in f.evidence)
+        if f.confidence is Confidence.HIGH and not has_replay_ev:
+            out.append(dataclasses.replace(f, confidence=Confidence.MEDIUM))
+            any_capped = True
+        else:
+            out.append(f)
+
+    if not any_capped:
+        return tuple(out), ()
+    return tuple(out), (
+        f"only {n_runs} run(s) available - HIGH-confidence findings reported as "
+        "MEDIUM. Re-run with --n 3 or higher for stronger statistical signal.",
     )
 
 

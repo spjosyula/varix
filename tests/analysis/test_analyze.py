@@ -69,9 +69,97 @@ def test_analyze_has_empty_notes_when_no_exclusions() -> None:
             finished_at=_T,
         )
 
-    runs = (_r("r1", "fp_a"), _r("r2", "fp_b"))
+    # N=3 so the n<3 confidence cap doesn't add a note of its own.
+    runs = (_r("r1", "fp_a"), _r("r2", "fp_b"), _r("r3", "fp_c"))
     result = analyze(runs, AdapterCapabilities(exposes_fingerprint=True))
     assert result.notes == ()
+
+
+def test_analyze_caps_high_confidence_when_only_two_runs() -> None:
+    """N=2 has weak statistical signal; HIGH findings get downgraded to MEDIUM
+    and a single note explains the cap."""
+
+    def _r(rid: str, fp: str) -> PipelineRun:
+        return PipelineRun(
+            run_id=rid,
+            step_runs=(
+                StepRun(
+                    step_id="s1", inputs="i", output="o",
+                    provider_metadata={"system_fingerprint": fp},
+                ),
+            ),
+            started_at=_T,
+            finished_at=_T,
+        )
+
+    runs = (_r("r1", "fp_a"), _r("r2", "fp_b"))
+    result = analyze(runs, AdapterCapabilities(exposes_fingerprint=True))
+    assert len(result.findings) == 1
+    assert result.findings[0].confidence is Confidence.MEDIUM
+    assert any("only 2 run(s)" in note for note in result.notes)
+
+
+def test_cap_exempts_findings_with_replay_disambiguation_evidence() -> None:
+    """HIGH stays HIGH when replay-disambiguation evidence is present, even at N=2."""
+    from varix.analysis.orchestration import _cap_confidence_for_weak_evidence
+    from varix.core import Evidence, Finding
+
+    plain_high = Finding(
+        step_id="s1",
+        localization=LocalizationOutcome.SOURCE,
+        confidence=Confidence.HIGH,
+        metric_name="exact",
+    )
+    with_replay_ev = Finding(
+        step_id="s2",
+        localization=LocalizationOutcome.DOWNSTREAM,
+        confidence=Confidence.HIGH,
+        metric_name="exact",
+        evidence=(Evidence(kind="replay_disambiguation", description="3 replays varied"),),
+    )
+
+    capped, notes = _cap_confidence_for_weak_evidence((plain_high, with_replay_ev), n_runs=2)
+    assert capped[0].confidence is Confidence.MEDIUM
+    assert capped[1].confidence is Confidence.HIGH
+    assert len(notes) == 1
+
+
+def test_cap_emits_no_note_when_nothing_was_capped() -> None:
+    """N<3 with no HIGH findings to cap stays quiet."""
+    from varix.analysis.orchestration import _cap_confidence_for_weak_evidence
+    from varix.core import Finding
+
+    medium = Finding(
+        step_id="s1",
+        localization=LocalizationOutcome.SOURCE,
+        confidence=Confidence.MEDIUM,
+        metric_name="exact",
+    )
+    capped, notes = _cap_confidence_for_weak_evidence((medium,), n_runs=2)
+    assert capped[0].confidence is Confidence.MEDIUM
+    assert notes == ()
+
+
+def test_analyze_does_not_cap_when_three_or_more_runs() -> None:
+    """N>=3 keeps HIGH findings untouched and emits no cap note."""
+
+    def _r(rid: str, fp: str) -> PipelineRun:
+        return PipelineRun(
+            run_id=rid,
+            step_runs=(
+                StepRun(
+                    step_id="s1", inputs="i", output="o",
+                    provider_metadata={"system_fingerprint": fp},
+                ),
+            ),
+            started_at=_T,
+            finished_at=_T,
+        )
+
+    runs = (_r("r1", "fp_a"), _r("r2", "fp_b"), _r("r3", "fp_c"))
+    result = analyze(runs, AdapterCapabilities(exposes_fingerprint=True))
+    assert result.findings[0].confidence is Confidence.HIGH
+    assert not any("statistical signal" in note for note in result.notes)
 
 
 @pytest.mark.asyncio
