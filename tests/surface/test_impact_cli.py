@@ -267,6 +267,51 @@ def test_execute_impact_unknown_step_raises_value_error(tmp_path: Path) -> None:
         execute_impact("not_a_step", "abc", base_dir=tmp_path)
 
 
+def test_execute_impact_unknown_step_lists_available_steps(tmp_path: Path) -> None:
+    """Same UX as `varix explain` on a missing step — list the actual steps
+    so the engineer doesn't have to grep the artifact to recover."""
+    from varix.core import SCHEMA_VERSION, CostSnapshot, PipelineAnalysis
+
+    pr1 = PipelineRun(
+        run_id="r1",
+        step_runs=(
+            StepRun(step_id="alpha", inputs="i", output="a1"),
+            StepRun(step_id="beta", inputs="a1", output="b1"),
+        ),
+        started_at=_T,
+        finished_at=_T,
+    )
+    pr2 = PipelineRun(
+        run_id="r2",
+        step_runs=(
+            StepRun(step_id="alpha", inputs="i", output="a2"),
+            StepRun(step_id="beta", inputs="a2", output="b2"),
+        ),
+        started_at=_T,
+        finished_at=_T,
+    )
+    analysis = PipelineAnalysis(
+        analysis_id="lst",
+        pipeline_name="fake",
+        n=2,
+        metric_name="exact",
+        schema_version=SCHEMA_VERSION,
+        runs=(pr1, pr2),
+        findings=(),
+        started_at=_T,
+        finished_at=_T,
+        total_cost=CostSnapshot(),
+    )
+    save(analysis, base_dir=tmp_path)
+    with pytest.raises(ValueError) as ei:
+        execute_impact("nope", "lst", base_dir=tmp_path)
+    msg = str(ei.value)
+    assert "step 'nope' not found" in msg
+    assert "available steps:" in msg
+    assert "alpha" in msg
+    assert "beta" in msg
+
+
 def test_execute_impact_no_artifacts_raises_file_not_found(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError):
         execute_impact("s1", base_dir=tmp_path)

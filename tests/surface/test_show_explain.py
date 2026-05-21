@@ -187,11 +187,14 @@ def test_execute_explain_unknown_step_raises_value_error(tmp_path: Path) -> None
 # --- render_explain ------------------------------------------------------------
 
 
-def test_render_explain_step_with_no_findings_says_so() -> None:
+def test_render_explain_step_with_no_findings_is_honest_about_replay() -> None:
+    """No findings doesn't mean 'deterministic' in absolute terms — we only
+    ran the pipeline N times, we didn't replay this step with fixed inputs."""
     analysis = _make_analysis("abc")
     rendered = render_explain(analysis, "s1")
-    assert "step `s1` has no findings" in rendered
-    assert "deterministic across the runs" in rendered
+    assert "stable across" in rendered
+    assert "didn't replay it independently" in rendered
+    assert "hasn't been ruled out" in rendered
 
 
 def test_render_explain_provider_side_renders_fingerprint_table() -> None:
@@ -372,3 +375,209 @@ def test_render_explain_with_multiple_findings_renders_each_block() -> None:
     # HIGH-confidence block must come first under the sort.
     assert rendered.index("provider-side variance") < rendered.index("prompt-side variance")
     assert "---" in rendered  # divider between blocks
+    # Multi-finding header tells the engineer there are several findings.
+    assert "has 2 findings" in rendered
+
+
+# --- multi-finding relationship note ------------------------------------------
+
+
+def test_tool_side_and_time_or_state_on_same_tool_get_relationship_note() -> None:
+    """When tool_side and time_or_state both fire on the same step and share
+    a tool, the secondary block must say so — otherwise the engineer is left
+    to reconcile two parallel observations themselves."""
+    diff_evidence = Evidence(
+        kind="tool_result_diff",
+        description="1 pair varied",
+        data={
+            "diffs": [
+                {"tool": "current_time", "results": ["t1", "t2", "t3"], "unique_count": 3}
+            ]
+        },
+    )
+    marker_evidence = Evidence(
+        kind="time_or_state_markers",
+        description="1 marker",
+        data={"markers": [{"kind": "time_tool_name", "tools": ["current_time"]}]},
+    )
+    findings = (
+        Finding(
+            step_id="s1",
+            localization=LocalizationOutcome.SOURCE,
+            confidence=Confidence.HIGH,
+            metric_name="exact",
+            classification=Classification.TOOL_SIDE,
+            evidence=(diff_evidence,),
+        ),
+        Finding(
+            step_id="s1",
+            localization=LocalizationOutcome.SOURCE,
+            confidence=Confidence.LOW,
+            metric_name="exact",
+            classification=Classification.TIME_OR_STATE,
+            evidence=(marker_evidence,),
+        ),
+    )
+    runs = (
+        PipelineRun(
+            run_id="r1",
+            step_runs=(
+                StepRun(
+                    step_id="s1",
+                    inputs="in",
+                    output="o1",
+                    tool_calls=(ToolCall(name="current_time", arguments={}, result="t1"),),
+                ),
+            ),
+            started_at=_T,
+            finished_at=_T,
+        ),
+        PipelineRun(
+            run_id="r2",
+            step_runs=(
+                StepRun(
+                    step_id="s1",
+                    inputs="in",
+                    output="o2",
+                    tool_calls=(ToolCall(name="current_time", arguments={}, result="t2"),),
+                ),
+            ),
+            started_at=_T,
+            finished_at=_T,
+        ),
+    )
+    analysis = PipelineAnalysis(
+        analysis_id="stacked",
+        pipeline_name="fake",
+        n=2,
+        metric_name="exact",
+        schema_version=SCHEMA_VERSION,
+        runs=runs,
+        findings=findings,
+        started_at=_T,
+        finished_at=_T,
+        total_cost=CostSnapshot(),
+    )
+    rendered = render_explain(analysis, "s1")
+    assert "stacks with the tool-side finding above" in rendered
+    assert "`current_time`" in rendered
+
+
+def test_unrelated_findings_get_no_relationship_note() -> None:
+    """A pair of findings that don't share evidence (e.g. provider_side +
+    tool_side on different tools) must NOT get a relationship note."""
+    findings = (
+        Finding(
+            step_id="s1",
+            localization=LocalizationOutcome.SOURCE,
+            confidence=Confidence.HIGH,
+            metric_name="exact",
+            classification=Classification.PROVIDER_SIDE,
+            evidence=(
+                Evidence(
+                    kind="fingerprint_diff",
+                    description="",
+                    data={"fingerprints": ["a", "b"], "unique": ["a", "b"]},
+                ),
+            ),
+        ),
+        Finding(
+            step_id="s1",
+            localization=LocalizationOutcome.SOURCE,
+            confidence=Confidence.MEDIUM,
+            metric_name="exact",
+            classification=Classification.PROMPT_SIDE,
+            reason="residual",
+        ),
+    )
+    analysis = PipelineAnalysis(
+        analysis_id="unrelated",
+        pipeline_name="fake",
+        n=2,
+        metric_name="exact",
+        schema_version=SCHEMA_VERSION,
+        runs=(
+            PipelineRun(
+                run_id="r1",
+                step_runs=(StepRun(step_id="s1", inputs="in", output="o1"),),
+                started_at=_T,
+                finished_at=_T,
+            ),
+            PipelineRun(
+                run_id="r2",
+                step_runs=(StepRun(step_id="s1", inputs="in", output="o2"),),
+                started_at=_T,
+                finished_at=_T,
+            ),
+        ),
+        findings=findings,
+        started_at=_T,
+        finished_at=_T,
+        total_cost=CostSnapshot(),
+    )
+    rendered = render_explain(analysis, "s1")
+    assert "stacks with" not in rendered
+
+
+# --- unknown-step error includes available steps -----------------------------
+
+
+def test_execute_explain_lists_available_steps_when_step_id_unknown() -> None:
+    """`varix explain bogus` should not leave the engineer guessing what
+    steps exist. Surface the list with each step's localization."""
+    import tempfile
+
+    findings = (
+        Finding(
+            step_id="s1",
+            localization=LocalizationOutcome.SOURCE,
+            confidence=Confidence.HIGH,
+            metric_name="exact",
+            classification=Classification.TOOL_SIDE,
+        ),
+    )
+    analysis = PipelineAnalysis(
+        analysis_id="known",
+        pipeline_name="fake",
+        n=2,
+        metric_name="exact",
+        schema_version=SCHEMA_VERSION,
+        runs=(
+            PipelineRun(
+                run_id="r1",
+                step_runs=(
+                    StepRun(step_id="s1", inputs="in", output="o1"),
+                    StepRun(step_id="s2", inputs="o1", output="x"),
+                    StepRun(step_id="s3", inputs="x", output="y"),
+                ),
+                started_at=_T,
+                finished_at=_T,
+            ),
+            PipelineRun(
+                run_id="r2",
+                step_runs=(
+                    StepRun(step_id="s1", inputs="in", output="o2"),
+                    StepRun(step_id="s2", inputs="o2", output="x"),
+                    StepRun(step_id="s3", inputs="x", output="y"),
+                ),
+                started_at=_T,
+                finished_at=_T,
+            ),
+        ),
+        findings=findings,
+        started_at=_T,
+        finished_at=_T,
+        total_cost=CostSnapshot(),
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        runs_dir = Path(tmp)
+        save(analysis, base_dir=runs_dir)
+        with pytest.raises(ValueError) as ei:
+            execute_explain("bogus", "known", base_dir=runs_dir)
+    msg = str(ei.value)
+    assert "step 'bogus' not found" in msg
+    assert "available steps:" in msg
+    assert "s1" in msg and "s2" in msg and "s3" in msg
+    # Localizations are surfaced — s1 is SOURCE (output varies, inputs identical),
+    # s2 is DOWNSTREAM (output stable but input varied), s3 deterministic.
+    assert "source" in msg

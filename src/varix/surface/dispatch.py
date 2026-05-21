@@ -24,6 +24,8 @@ from varix.core import (
     BudgetExceeded,
     Clock,
     ExactMatch,
+    Finding,
+    LocalizationOutcome,
     PipelineAnalysis,
     Rng,
     RunFailed,
@@ -238,10 +240,55 @@ def execute_explain(
             raise FileNotFoundError("no saved analyses found")
         analysis = load_path(latest)
 
-    step_ids = {sr.step_id for run in analysis.runs for sr in run.step_runs}
-    if step_id not in step_ids:
-        raise ValueError(f"step {step_id!r} not found in analysis {analysis.analysis_id!r}")
+    available = _step_ids_in_order(analysis)
+    if step_id not in available:
+        raise ValueError(_unknown_step_message(analysis, step_id, available))
     return render_explain(analysis, step_id)
+
+
+def _step_ids_in_order(analysis: PipelineAnalysis) -> list[str]:
+    """Step IDs in first-appearance order across the analysis's runs."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for run in analysis.runs:
+        for sr in run.step_runs:
+            if sr.step_id not in seen:
+                seen.add(sr.step_id)
+                out.append(sr.step_id)
+    return out
+
+
+def _unknown_step_message(
+    analysis: PipelineAnalysis, requested: str, available: list[str]
+) -> str:
+    """Build the unknown-step error: name the missing step, then list the
+    actual steps with their localization so the engineer can pick the right one."""
+    outcomes = Localizer(metric=ExactMatch()).classify_steps(analysis.runs)
+    findings_by_step: dict[str, list[Finding]] = {}
+    for f in analysis.findings:
+        findings_by_step.setdefault(f.step_id, []).append(f)
+
+    lines = [
+        f"step {requested!r} not found in analysis {analysis.analysis_id!r}",
+        "",
+        "available steps:",
+    ]
+    pad = max((len(s) for s in available), default=0)
+    for sid in available:
+        outcome = outcomes.get(sid)
+        if outcome is LocalizationOutcome.SOURCE:
+            label = "source"
+        elif outcome is LocalizationOutcome.DOWNSTREAM:
+            has_disambig = any(
+                ev.kind == "replay_disambiguation"
+                for f in findings_by_step.get(sid, [])
+                for ev in f.evidence
+            )
+            label = "source (replay-promoted)" if has_disambig else "downstream"
+        else:
+            label = "deterministic"
+        lines.append(f"  {sid.ljust(pad)}  ({label})")
+    return "\n".join(lines)
 
 
 def execute_impact(
@@ -265,9 +312,9 @@ def execute_impact(
             raise FileNotFoundError("no saved analyses found")
         analysis = load_path(latest)
 
-    step_ids = {sr.step_id for run in analysis.runs for sr in run.step_runs}
-    if step_id not in step_ids:
-        raise ValueError(f"step {step_id!r} not found in analysis {analysis.analysis_id!r}")
+    available = _step_ids_in_order(analysis)
+    if step_id not in available:
+        raise ValueError(_unknown_step_message(analysis, step_id, available))
 
     report = ImpactEstimator().estimate(analysis.runs, step_id)
     return render_impact(analysis, report)

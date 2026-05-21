@@ -682,3 +682,278 @@ def test_explain_renders_replay_disambiguation_footer() -> None:
     assert "Replay disambiguation:" in out
     assert "Replayed 3 times" in out
     assert "3 unique outputs" in out
+
+
+# --- trust uniformity: actual values shown in tool_side / time_or_state / impact
+
+
+def test_format_varied_values_returns_short_values_in_full() -> None:
+    from varix.surface.reporter import _format_varied_values
+
+    out = _format_varied_values(["a", "b", "c"])
+    assert out == ["a", "b", "c"]
+
+
+def test_format_varied_values_end_truncates_when_divergence_is_at_start() -> None:
+    from varix.surface.reporter import _format_varied_values
+
+    a = "alpha" + "x" * 400
+    b = "beta" + "y" * 400
+    out = _format_varied_values([a, b], max_chars=50)
+    assert out[0].startswith("alpha")
+    assert out[1].startswith("beta")
+    assert out[0].endswith("...")
+
+
+def test_format_varied_values_centers_window_around_deep_divergence() -> None:
+    """When values agree on a long prefix, the window must straddle the
+    point where they diverge — not just chop the front off."""
+    from varix.surface.reporter import _format_varied_values
+
+    prefix = "shared_prefix_" * 30  # ~420 chars all identical
+    a = prefix + "DIFFERENT_A_suffix"
+    b = prefix + "DIFFERENT_B_suffix"
+    out = _format_varied_values([a, b], max_chars=80)
+    # The divergence region MUST be visible; lifting just the prefix would fail.
+    assert "DIFFERENT_A" in out[0]
+    assert "DIFFERENT_B" in out[1]
+    assert out[0].startswith("...")  # window was shifted away from index 0
+    assert out[1].startswith("...")
+
+
+def test_format_varied_values_preserves_run_order_no_dedupe() -> None:
+    """Duplicates must appear in input order; we don't dedupe-then-show."""
+    from varix.surface.reporter import _format_varied_values
+
+    out = _format_varied_values(["x", "y", "x"])
+    assert out == ["x", "y", "x"]
+
+
+def test_explain_tool_side_shows_per_run_results_in_order() -> None:
+    """tool_side explain block must list the actual results, run-indexed."""
+    from varix.core import (
+        Classification,
+        Confidence,
+        CostSnapshot,
+        Evidence,
+        Finding,
+        LocalizationOutcome,
+        PipelineAnalysis,
+        PipelineRun,
+        StepRun,
+    )
+    from varix.surface.reporter import render_explain
+
+    finding = Finding(
+        step_id="s1",
+        localization=LocalizationOutcome.SOURCE,
+        confidence=Confidence.HIGH,
+        metric_name="exact",
+        classification=Classification.TOOL_SIDE,
+        evidence=(
+            Evidence(
+                kind="tool_result_diff",
+                description="1 pair varied",
+                data={
+                    "diffs": [
+                        {
+                            "tool": "lookup_customer",
+                            "results": ["hit_v1", "hit_v2", "hit_v3"],
+                            "unique_count": 3,
+                        }
+                    ]
+                },
+            ),
+        ),
+    )
+    analysis = PipelineAnalysis(
+        analysis_id="tool-side-values",
+        pipeline_name="fake",
+        n=3,
+        metric_name="exact",
+        schema_version="0.2",
+        runs=(
+            PipelineRun(
+                run_id=f"r{i}",
+                step_runs=(StepRun(step_id="s1", inputs="in", output=f"o{i}"),),
+                started_at=_FROZEN,
+                finished_at=_FROZEN,
+            )
+            for i in range(3)
+        ),
+        findings=(finding,),
+        started_at=_FROZEN,
+        finished_at=_FROZEN,
+        total_cost=CostSnapshot(),
+    )
+    out = render_explain(analysis, "s1")
+    # The actual results appear in run order under the tool listing.
+    assert "run 1: hit_v1" in out
+    assert "run 2: hit_v2" in out
+    assert "run 3: hit_v3" in out
+    # And the original summary line remains.
+    assert "3 distinct results" in out
+
+
+def test_explain_time_or_state_shows_tool_returned_values() -> None:
+    """time_or_state explain must surface the actual values a time-named tool
+    returned, in run order, when such a marker is present."""
+    from varix.core import (
+        Classification,
+        Confidence,
+        CostSnapshot,
+        Evidence,
+        Finding,
+        LocalizationOutcome,
+        PipelineAnalysis,
+        PipelineRun,
+        StepRun,
+        ToolCall,
+    )
+    from varix.surface.reporter import render_explain
+
+    finding = Finding(
+        step_id="s2",
+        localization=LocalizationOutcome.SOURCE,
+        confidence=Confidence.LOW,
+        metric_name="exact",
+        classification=Classification.TIME_OR_STATE,
+        evidence=(
+            Evidence(
+                kind="time_or_state_markers",
+                description="1 marker",
+                data={
+                    "markers": [{"kind": "time_tool_name", "tools": ["current_time"]}]
+                },
+            ),
+        ),
+    )
+    runs = tuple(
+        PipelineRun(
+            run_id=f"r{i}",
+            step_runs=(
+                StepRun(
+                    step_id="s2",
+                    inputs="in",
+                    output=f"o{i}",
+                    tool_calls=(
+                        ToolCall(
+                            name="current_time",
+                            arguments={},
+                            result=f"2026-05-20T06:55:{i:02d}",
+                        ),
+                    ),
+                ),
+            ),
+            started_at=_FROZEN,
+            finished_at=_FROZEN,
+        )
+        for i in range(3)
+    )
+    analysis = PipelineAnalysis(
+        analysis_id="time-values",
+        pipeline_name="fake",
+        n=3,
+        metric_name="exact",
+        schema_version="0.2",
+        runs=runs,
+        findings=(finding,),
+        started_at=_FROZEN,
+        finished_at=_FROZEN,
+        total_cost=CostSnapshot(),
+    )
+    out = render_explain(analysis, "s2")
+    assert "run 1: 2026-05-20T06:55:00" in out
+    assert "run 2: 2026-05-20T06:55:01" in out
+    assert "run 3: 2026-05-20T06:55:02" in out
+
+
+def test_impact_propagates_shows_grouped_final_answers() -> None:
+    """varix impact on PROPAGATES must show the actual final answers grouped
+    by equivalence: the modal class labeled 'Most common', others 'Different'."""
+    from varix.analysis import ImpactEstimator
+    from varix.core import (
+        CostSnapshot,
+        PipelineAnalysis,
+        PipelineRun,
+        StepRun,
+    )
+    from varix.surface.reporter import render_impact
+
+    # 3 runs: s1 varies; s2 (final) has two equivalence classes — "alpha" (2 runs) and "beta" (1).
+    def _run(rid: str, s1_out: str, s2_out: str) -> PipelineRun:
+        return PipelineRun(
+            run_id=rid,
+            step_runs=(
+                StepRun(step_id="s1", inputs="in", output=s1_out),
+                StepRun(step_id="s2", inputs=s1_out, output=s2_out),
+            ),
+            started_at=_FROZEN,
+            finished_at=_FROZEN,
+        )
+
+    runs = (
+        _run("r1", "x", "alpha"),
+        _run("r2", "y", "alpha"),
+        _run("r3", "z", "beta"),
+    )
+    analysis = PipelineAnalysis(
+        analysis_id="impact-groups",
+        pipeline_name="fake",
+        n=3,
+        metric_name="exact",
+        schema_version="0.2",
+        runs=runs,
+        findings=(),
+        started_at=_FROZEN,
+        finished_at=_FROZEN,
+        total_cost=CostSnapshot(),
+    )
+    report = ImpactEstimator().estimate(runs, "s1")
+    out = render_impact(analysis, report)
+    assert "Most common (2 runs):" in out
+    assert "Different (1 run):" in out
+    assert "alpha" in out
+    assert "beta" in out
+
+
+def test_impact_absorbed_shows_the_single_final_answer() -> None:
+    """ABSORBED downstream case: 1 final answer despite source variance.
+    The single final must be shown."""
+    from varix.analysis import ImpactEstimator
+    from varix.core import (
+        CostSnapshot,
+        PipelineAnalysis,
+        PipelineRun,
+        StepRun,
+    )
+    from varix.surface.reporter import render_impact
+
+    def _run(rid: str, s1_out: str) -> PipelineRun:
+        return PipelineRun(
+            run_id=rid,
+            step_runs=(
+                StepRun(step_id="s1", inputs="in", output=s1_out),
+                StepRun(step_id="s2", inputs=s1_out, output="normalized"),
+            ),
+            started_at=_FROZEN,
+            finished_at=_FROZEN,
+        )
+
+    runs = (_run("r1", "x"), _run("r2", "y"), _run("r3", "z"))
+    analysis = PipelineAnalysis(
+        analysis_id="impact-absorbed",
+        pipeline_name="fake",
+        n=3,
+        metric_name="exact",
+        schema_version="0.2",
+        runs=runs,
+        findings=(),
+        started_at=_FROZEN,
+        finished_at=_FROZEN,
+        total_cost=CostSnapshot(),
+    )
+    report = ImpactEstimator().estimate(runs, "s1")
+    out = render_impact(analysis, report)
+    assert "Final answer (all 3 runs):" in out
+    assert "normalized" in out

@@ -63,6 +63,52 @@ def _truncate(text: str, max_chars: int = _OUTPUT_TRUNCATE_LEN) -> str:
     return text[:max_chars] + "..."
 
 
+_VARIED_VALUE_BUDGET = 200
+
+
+def _format_varied_values(
+    values: Sequence[Any], *, max_chars: int = _VARIED_VALUE_BUDGET
+) -> list[str]:
+    """Stringify a sequence of differing values (in observed order) so the
+    region where they actually differ stays visible. End-truncates when
+    values are simply long; centers a window around the first divergence
+    when they agree on a long prefix.
+    """
+    rendered = [v if isinstance(v, str) else repr(v) for v in values]
+    if all(len(s) <= max_chars for s in rendered):
+        return rendered
+
+    divergence = _first_divergence_index(rendered)
+    if divergence is None:
+        return [_end_truncate(s, max_chars) for s in rendered]
+
+    context = max_chars // 3
+    start = max(0, divergence - context)
+    end = start + max_chars
+    return [
+        ("..." if start > 0 else "")
+        + s[start:end]
+        + ("..." if end < len(s) else "")
+        for s in rendered
+    ]
+
+
+def _first_divergence_index(strings: Sequence[str]) -> int | None:
+    """Smallest index where the strings disagree; None if all identical."""
+    if len(strings) < 2:
+        return None
+    min_len = min(len(s) for s in strings)
+    max_len = max(len(s) for s in strings)
+    for i in range(min_len):
+        if len({s[i] for s in strings}) > 1:
+            return i
+    return min_len if max_len != min_len else None
+
+
+def _end_truncate(s: str, max_chars: int) -> str:
+    return s if len(s) <= max_chars else s[:max_chars] + "..."
+
+
 def _format_duration(start: datetime, end: datetime) -> str:
     """Render a wall-clock delta as '0.0s', '14s', or '2m 14s'."""
     total = max((end - start).total_seconds(), 0.0)
@@ -212,6 +258,49 @@ def _impact_source_unique(report: ImpactReport) -> int:
         if ev.kind == "source_to_final_diff":
             return int(ev.data.get("source_unique_outputs", 0))
     return 0
+
+
+def _final_output_groups(
+    runs: Sequence[PipelineRun], final_step_id: str, metric: ExactMatch
+) -> list[tuple[Any, list[int]]]:
+    """Group runs by final-output equivalence. Returns (representative,
+    [run_indices_in_observed_order]) in first-appearance order."""
+    finals: list[Any] = []
+    for r in runs:
+        for sr in r.step_runs:
+            if sr.step_id == final_step_id:
+                finals.append(sr.output)
+                break
+    groups: list[tuple[Any, list[int]]] = []
+    for i, output in enumerate(finals):
+        for rep, indices in groups:
+            if metric.equivalent(output, rep):
+                indices.append(i)
+                break
+        else:
+            groups.append((output, [i]))
+    return groups
+
+
+def _render_final_groups(groups: Sequence[tuple[Any, list[int]]]) -> list[str]:
+    """Render grouped final answers: modal-first, then any differing groups.
+    Each value goes through diff-aware truncation."""
+    if not groups:
+        return []
+    ordered = sorted(groups, key=lambda g: -len(g[1]))
+    values = [g[0] for g in ordered]
+    formatted = _format_varied_values(values)
+    out: list[str] = [""]
+    for (_, indices), text in zip(ordered, formatted, strict=True):
+        size = len(indices)
+        label = (
+            f"Most common ({size} {_runs_word(size)}):"
+            if size == max(len(g[1]) for g in groups) and size > 1
+            else f"Different ({size} {_runs_word(size)}):"
+        )
+        out.append(f"  {label}")
+        out.append(f"    {text}")
+    return out
 
 
 # Confidence ranking — used to pick the primary finding when a step has several.
@@ -542,13 +631,16 @@ def _explain_tool_side(finding: Finding, analysis: PipelineAnalysis, step_id: st
         "",
         "Why this classification:",
         f"  Across {n} {_runs_word(n)} of `{step_id}`, the same tool returned different results:",
-        "",
     ]
     for d in diffs:
         tool = d.get("tool", "?")
+        results = list(d.get("results", []))
         unique_count = int(d.get("unique_count", 0))
         plural = "s" if unique_count != 1 else ""
-        lines.append(f"    tool `{tool}`: {unique_count} distinct result{plural}")
+        lines.append("")
+        lines.append(f"    tool `{tool}` — {unique_count} distinct result{plural}:")
+        for i, formatted in enumerate(_format_varied_values(results), 1):
+            lines.append(f"      run {i}: {formatted}")
     lines.extend([
         "",
         "  varix paired tool calls by (name, arguments). Same input, different",
@@ -622,12 +714,42 @@ def _explain_time_or_state(finding: Finding, analysis: PipelineAnalysis, step_id
     ]
     for m in markers:
         lines.append(f"    - {_format_time_marker(m)}")
+        # For tool-name markers, surface the actual values each named tool
+        # returned across runs (in run order). Lets the engineer see the
+        # temporal pattern without leaving the CLI.
+        if isinstance(m, dict) and m.get("kind") == "time_tool_name":
+            for tool_name in m.get("tools", []):
+                results = _gather_tool_results(analysis, step_id, str(tool_name))
+                if len(results) < 2:
+                    continue
+                lines.append(f"        tool `{tool_name}` returned:")
+                for i, formatted in enumerate(_format_varied_values(results), 1):
+                    lines.append(f"          run {i}: {formatted}")
     lines.extend([
         "",
         "  This is a low-confidence heuristic - markers like tool names containing",
         "  'time'/'rand' or ISO timestamps. Verify by inspecting the step's logic.",
     ])
     return lines
+
+
+def _gather_tool_results(
+    analysis: PipelineAnalysis, step_id: str, tool_name: str
+) -> list[Any]:
+    """Collect every result of `tool_name` invocations under `step_id`, in
+    run order. First matching call per run only — same convention as the
+    tool_side classifier."""
+    out: list[Any] = []
+    for run in analysis.runs:
+        for sr in run.step_runs:
+            if sr.step_id != step_id:
+                continue
+            for tc in sr.tool_calls:
+                if tc.name == tool_name:
+                    out.append(tc.result)
+                    break
+            break
+    return out
 
 
 def _explain_unavailable(finding: Finding, step_id: str) -> list[str]:
@@ -692,17 +814,21 @@ def render_explain(analysis: PipelineAnalysis, step_id: str) -> str:
     """Return a plain-text evidence trail for `step_id`. ASCII-only, no trailing newline.
 
     Cases:
-      - No findings: short 'deterministic, nothing to explain' sentence.
-      - One finding: a single classification block followed by analysis + Next.
-      - Multiple findings: each block separated by '---', sorted HIGH→LOW confidence.
+      - No findings: 'stable across these runs' — honest about not having replayed.
+      - One finding: a single classification block.
+      - Multiple findings: header + each block separated by '---', high→low confidence.
+        Stacked classifications (e.g. tool_side + time_or_state on the same tool)
+        get an inline relationship note in the secondary block.
     """
     short_id = _short_id(analysis.analysis_id)
     step_findings = [f for f in analysis.findings if f.step_id == step_id]
 
     if not step_findings:
+        n = analysis.n
         return (
-            f"step `{step_id}` has no findings - it was deterministic across "
-            f"the runs, so there is nothing to explain.\n"
+            f"step `{step_id}` was stable across these {n} {_runs_word(n)}. "
+            "varix didn't replay it independently, so independent variance "
+            "(output varying under fixed inputs) hasn't been ruled out.\n"
             f"\n"
             f"analysis: {short_id}"
         )
@@ -710,15 +836,63 @@ def render_explain(analysis: PipelineAnalysis, step_id: str) -> str:
     sorted_findings = sorted(step_findings, key=lambda f: _CONFIDENCE_ORDER[f.confidence])
 
     lines: list[str] = []
+    if len(sorted_findings) > 1:
+        n = len(sorted_findings)
+        lines.append(f"step `{step_id}` has {n} findings (highest confidence first):")
+        lines.append("")
     for i, f in enumerate(sorted_findings):
         if i > 0:
             lines.extend(["", "---", ""])
-        lines.extend(_explain_block(f, analysis, step_id))
+        block = _explain_block(f, analysis, step_id)
+        if i > 0:
+            # Inject relationship note right after the secondary block's headline.
+            note = _relationship_note(sorted_findings[0], f)
+            if note:
+                block = [block[0], *note, *block[1:]]
+        lines.extend(block)
 
     lines.extend(["", f"analysis: {short_id}", "", "Next:"])
     cmd = f"varix impact {step_id}"
     lines.append(f"  {cmd.ljust(len(cmd) + 6)}see how this changes your final output")
     return "\n".join(lines)
+
+
+def _relationship_note(primary: Finding, secondary: Finding) -> list[str]:
+    """When the secondary finding stacks meaningfully with the primary, return
+    an inline note. Currently handles tool_side + time_or_state on the same tool."""
+    if (
+        primary.classification is Classification.TOOL_SIDE
+        and secondary.classification is Classification.TIME_OR_STATE
+    ):
+        tools = _tools_in_time_marker(secondary)
+        if tools and _tools_match_tool_side(primary, tools):
+            names = ", ".join(f"`{t}`" for t in tools)
+            return [
+                f"(stacks with the tool-side finding above — the tool {names}",
+                " is named like a clock/RNG, the likely source of the variance)",
+            ]
+    return []
+
+
+def _tools_in_time_marker(finding: Finding) -> list[str]:
+    for ev in finding.evidence:
+        if ev.kind != "time_or_state_markers":
+            continue
+        for m in ev.data.get("markers", []):
+            if isinstance(m, dict) and m.get("kind") == "time_tool_name":
+                return [str(t) for t in m.get("tools", [])]
+    return []
+
+
+def _tools_match_tool_side(finding: Finding, tools: Sequence[str]) -> bool:
+    """True if any of `tools` appears in the tool_side finding's diff list."""
+    tool_set = set(tools)
+    for ev in finding.evidence:
+        if ev.kind == "tool_result_diff":
+            for d in ev.data.get("diffs", []):
+                if d.get("tool") in tool_set:
+                    return True
+    return False
 
 
 def render_impact(analysis: PipelineAnalysis, report: ImpactReport) -> str:
@@ -755,21 +929,30 @@ def render_impact(analysis: PipelineAnalysis, report: ImpactReport) -> str:
         )
     elif report.behavior is ImpactBehavior.PROPAGATES:
         n = analysis.n
-        modal = _count_modal_final_output(analysis.runs, report.final_step_id or sid, ExactMatch())
+        metric = ExactMatch()
+        final_sid = report.final_step_id or sid
+        groups = _final_output_groups(analysis.runs, final_sid, metric)
+        modal_size = max((len(g[1]) for g in groups), default=0)
+
         lines.append(f"{sid}'s variance changes the final output.")
         lines.append("")
-        if modal <= 1:
+        if modal_size <= 1:
             lines.append(f"  {n} of {n} runs reached a different final answer.")
         else:
-            different = n - modal
+            different = n - modal_size
             lines.append(
                 f"  {different} of {n} runs reached a different final answer; "
-                f"{modal} were absorbed."
+                f"{modal_size} were absorbed."
             )
+        lines.extend(_render_final_groups(groups))
     else:
         # ABSORBED, downstream pipeline normalized the variance.
         n = analysis.n
         source_unique = _impact_source_unique(report)
+        metric = ExactMatch()
+        final_sid = report.final_step_id or sid
+        groups = _final_output_groups(analysis.runs, final_sid, metric)
+
         lines.append(f"{sid}'s variance is absorbed before the final output.")
         lines.append("")
         lines.append(
@@ -777,6 +960,11 @@ def render_impact(analysis: PipelineAnalysis, report: ImpactReport) -> str:
             f"across {n} runs."
         )
         lines.append("  The downstream pipeline normalized the differences.")
+        if groups:
+            lines.append("")
+            lines.append(f"  Final answer (all {n} {_runs_word(n)}):")
+            for formatted in _format_varied_values([groups[0][0]]):
+                lines.append(f"    {formatted}")
 
     lines.append("")
     lines.append(f"confidence: {_CONFIDENCE_LABELS[report.confidence]}")
