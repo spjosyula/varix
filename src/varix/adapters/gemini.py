@@ -20,7 +20,11 @@ Capabilities:
                                to `system_fingerprint` for the provider classifier.
     exposes_tool_calls=True    Faithful zero — this adapter does not wire tool
                                calls; reporting zero each run is honest, not silent.
-    supports_replay=False      Single-shot; `replay_step` raises CapabilityMissing.
+    supports_replay=True       `replay_step` re-runs the model with `fixed_inputs`
+                               held constant; seed forwards for deterministic
+                               replay. Construction-time config (temperature,
+                               generation_config, timeout) is the only configuration
+                               — no override surface, by design.
 
 Caveats:
     - Default cost rates apply to `gemini-2.5-flash-lite`. Pass
@@ -53,7 +57,6 @@ except ImportError as exc:
 from varix.core import (
     AdapterCapabilities,
     AdapterError,
-    CapabilityMissing,
     CostSnapshot,
     PipelineRun,
     Step,
@@ -136,7 +139,7 @@ class GeminiSingleCallAdapter:
         return AdapterCapabilities(
             exposes_fingerprint=True,
             exposes_tool_calls=True,
-            supports_replay=False,
+            supports_replay=True,
         )
 
     async def pipeline_structure(self, pipeline_input: Any) -> StepGraph:
@@ -168,8 +171,26 @@ class GeminiSingleCallAdapter:
     async def replay_step(
         self, step_id: str, fixed_inputs: Any, seed: int | None = None
     ) -> StepRun:
-        raise CapabilityMissing(
-            "GeminiSingleCallAdapter does not support replay (supports_replay=False)"
+        """Re-run the model with `fixed_inputs` held constant.
+
+        Adapter's construction-time config applies unchanged; the only per-call
+        knob is `seed`. For varying the temperature or model, build a new
+        adapter — replay is for reproduction, not counterfactuals.
+        """
+        if step_id != _RESPONSE_STEP_ID:
+            raise AdapterError(
+                f"unknown step_id {step_id!r}; "
+                f"this adapter only exposes {_RESPONSE_STEP_ID!r}"
+            )
+        prompt = str(fixed_inputs)
+        result = await self._call(prompt, seed=seed)
+        return StepRun(
+            step_id=_RESPONSE_STEP_ID,
+            inputs=fixed_inputs,
+            output=result.output,
+            provider_metadata=result.metadata or None,
+            cost=result.cost,
+            seed=seed,
         )
 
     async def _call(self, prompt: str, *, seed: int | None = None) -> _CallResult:

@@ -20,7 +20,7 @@ pytest.importorskip("google.genai")
 from google.genai import types as genai_types
 
 from varix.adapters.gemini import GeminiSingleCallAdapter
-from varix.core import Adapter, AdapterError, CapabilityMissing, RunFailed
+from varix.core import Adapter, AdapterError, RunFailed
 from varix.core.protocol_test_suite import validate_adapter
 from varix.execution import run_n
 
@@ -127,7 +127,7 @@ def test_capabilities_match_design() -> None:
     caps = adapter.capabilities()
     assert caps.exposes_fingerprint is True
     assert caps.exposes_tool_calls is True
-    assert caps.supports_replay is False
+    assert caps.supports_replay is True
 
 
 def test_satisfies_runtime_checkable_protocol() -> None:
@@ -419,14 +419,49 @@ async def test_http_options_in_generation_config_is_preserved() -> None:
     assert sent_http.timeout == 5000  # user's setting wins; 99_000 not applied
 
 
-# --- Replay refusal ----------------------------------------------------------
+# --- Replay --------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_replay_step_raises_capability_missing() -> None:
+async def test_replay_step_returns_step_run_with_fixed_inputs() -> None:
+    fake = _FakeClient(_ok_response())
+    adapter = GeminiSingleCallAdapter(client=fake)
+    sr = await adapter.replay_step("response", "fixed prompt")
+    assert sr.step_id == "response"
+    assert sr.inputs == "fixed prompt"
+    assert "Rayleigh" in str(sr.output)
+    assert sr.cost.dollars > 0
+    # Construction-time temperature default still applies; recorded in metadata.
+    assert sr.provider_metadata == {
+        "system_fingerprint": "gemini-2.5-flash-lite-001",
+        "temperature": 0.0,
+    }
+
+
+@pytest.mark.asyncio
+async def test_replay_step_forwards_seed_to_sdk() -> None:
+    fake = _FakeClient(_ok_response())
+    adapter = GeminiSingleCallAdapter(client=fake)
+    sr = await adapter.replay_step("response", "fixed prompt", seed=7)
+    assert fake.aio.models.calls[0]["config"].seed == 7
+    assert sr.seed == 7
+
+
+@pytest.mark.asyncio
+async def test_replay_step_uses_construction_temperature() -> None:
+    """Replay must reproduce — temperature is locked to construction time."""
+    fake = _FakeClient(_ok_response())
+    adapter = GeminiSingleCallAdapter(client=fake, temperature=0.3)
+    await adapter.replay_step("response", "fixed prompt")
+    cfg = fake.aio.models.calls[0]["config"]
+    assert cfg.temperature == 0.3
+
+
+@pytest.mark.asyncio
+async def test_replay_step_raises_on_unknown_step_id() -> None:
     adapter = GeminiSingleCallAdapter(client=_FakeClient(_ok_response()))
-    with pytest.raises(CapabilityMissing, match="does not support replay"):
-        await adapter.replay_step("response", "any input")
+    with pytest.raises(AdapterError, match="unknown step_id"):
+        await adapter.replay_step("not_a_step", "anything")
 
 
 # --- Opt-in integration test -------------------------------------------------
