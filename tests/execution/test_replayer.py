@@ -102,12 +102,13 @@ from varix.execution.runner import CostAccumulator, run_n  # noqa: E402
 
 @pytest.mark.asyncio
 async def test_gather_returns_empty_when_replay_unsupported() -> None:
-    """Adapter without replay capability: no replays attempted, empty dict."""
+    """Adapter without replay capability: no replays attempted, no notes."""
     adapter: Adapter = _NoReplayAdapter()
-    out = await gather_disambiguation_replays(
+    out, notes = await gather_disambiguation_replays(
         adapter, runs=[], outcomes={"s1": LocalizationOutcome.DOWNSTREAM}
     )
     assert out == {}
+    assert notes == []
 
 
 @pytest.mark.asyncio
@@ -120,8 +121,9 @@ async def test_gather_skips_deterministic_and_source_steps() -> None:
         "s2": LocalizationOutcome.SOURCE,
         # No DOWNSTREAM step → nothing to replay.
     }
-    out = await gather_disambiguation_replays(adapter, runs, outcomes, k=3)
+    out, notes = await gather_disambiguation_replays(adapter, runs, outcomes, k=3)
     assert out == {}
+    assert notes == []
 
 
 @pytest.mark.asyncio
@@ -132,10 +134,11 @@ async def test_gather_replays_downstream_with_variance() -> None:
     adapter = FakeAdapter(variance={"s2": Classification.PROMPT_SIDE})
     runs = await run_n(adapter, "hi", n=3)
     outcomes = {"s3": LocalizationOutcome.DOWNSTREAM}
-    out = await gather_disambiguation_replays(adapter, runs, outcomes, k=3)
+    out, notes = await gather_disambiguation_replays(adapter, runs, outcomes, k=3)
     assert "s3" in out
     assert len(out["s3"]) == 3
     assert all(sr.step_id == "s3" for sr in out["s3"])
+    assert notes == []
 
 
 @pytest.mark.asyncio
@@ -163,7 +166,7 @@ async def test_gather_honors_max_cost_and_stops_partway() -> None:
     adapter = _CostlyReplay(variance={"s2": Classification.PROMPT_SIDE})
     runs = await run_n(adapter, "hi", n=3)
     cost = CostAccumulator()
-    out = await gather_disambiguation_replays(
+    out, notes = await gather_disambiguation_replays(
         adapter,
         runs,
         {"s3": LocalizationOutcome.DOWNSTREAM},
@@ -173,6 +176,7 @@ async def test_gather_honors_max_cost_and_stops_partway() -> None:
     )
     assert "s3" in out
     assert len(out["s3"]) < 5  # bailed early
+    assert notes == []  # budget exhaustion is not a failure note
 
 
 @pytest.mark.asyncio
@@ -193,7 +197,33 @@ async def test_gather_continues_other_steps_when_one_step_raises() -> None:
         "s3": LocalizationOutcome.DOWNSTREAM,
         "s4": LocalizationOutcome.DOWNSTREAM,
     }
-    out = await gather_disambiguation_replays(adapter, runs, outcomes, k=3)
+    out, notes = await gather_disambiguation_replays(adapter, runs, outcomes, k=3)
     # s3 failed → either absent or empty; s4 succeeded with K replays.
     assert "s4" in out and len(out["s4"]) == 3
     assert out.get("s3", []) == []
+    # The failure is surfaced as a note rather than silently dropped.
+    assert any("s3" in n and "transient failure" in n for n in notes)
+
+
+@pytest.mark.asyncio
+async def test_gather_emits_note_on_first_replay_failure() -> None:
+    """When replay_step raises on the very first call, the step gets no
+    entry in `replays` but the failure is named in `notes` — otherwise the
+    user has no way to know the gather ran at all."""
+
+    class _AlwaysRaises(FakeAdapter):
+        async def replay_step(
+            self, step_id: str, fixed_inputs: Any, seed: int | None = None
+        ) -> StepRun:
+            raise RuntimeError("API down")
+
+    adapter = _AlwaysRaises(variance={"s2": Classification.PROMPT_SIDE})
+    runs = await run_n(adapter, "hi", n=3)
+    out, notes = await gather_disambiguation_replays(
+        adapter, runs, {"s3": LocalizationOutcome.DOWNSTREAM}, k=3
+    )
+    assert "s3" not in out
+    assert len(notes) == 1
+    assert "s3" in notes[0]
+    assert "0 successful replay" in notes[0]
+    assert "API down" in notes[0]

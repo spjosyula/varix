@@ -47,19 +47,25 @@ async def gather_disambiguation_replays(
     metric: VarianceMetric | None = None,
     cost: CostAccumulator | None = None,
     max_cost: float | None = None,
-) -> dict[str, list[StepRun]]:
+) -> tuple[dict[str, list[StepRun]], list[str]]:
     """Replay each DOWNSTREAM step with output variance, holding its inputs
     fixed at the first run's values. Reveals whether the step has its own
     variance source vs. just cascading from upstream.
 
-    No-ops when the adapter doesn't support replay. Honors `max_cost`. If
-    `replay_step` raises for a step, that step's gathering stops; others
-    continue.
+    Returns `(replays_by_step, notes)`. `notes` carries one entry per step
+    whose `replay_step` raised — naming the step, how many replays succeeded
+    before the failure, and the exception. Other steps continue gathering.
+    Without this surface, a flaky replay would silently produce shorter
+    sequences with no indication anything failed.
+
+    No-ops (returns `({}, [])`) when the adapter doesn't support replay.
+    Honors `max_cost`.
     """
     if not adapter.capabilities().supports_replay:
-        return {}
+        return {}, []
     actual_metric = metric if metric is not None else ExactMatch()
     replays: dict[str, list[StepRun]] = {}
+    notes: list[str] = []
 
     for step_id, outcome in outcomes.items():
         if outcome is not LocalizationOutcome.DOWNSTREAM:
@@ -81,14 +87,19 @@ async def gather_disambiguation_replays(
                 break
             try:
                 sr = await adapter.replay_step(step_id, fixed_inputs)
-            except Exception:
+            except Exception as exc:
+                notes.append(
+                    f"replay_step failed for {step_id!r} after "
+                    f"{len(step_replays)} successful replay(s): "
+                    f"{type(exc).__name__}: {exc}"
+                )
                 break
             if cost is not None:
                 cost.add(sr.cost)
             step_replays.append(sr)
         if step_replays:
             replays[step_id] = step_replays
-    return replays
+    return replays, notes
 
 
 def _outputs_vary(step_runs: Sequence[StepRun], metric: VarianceMetric) -> bool:

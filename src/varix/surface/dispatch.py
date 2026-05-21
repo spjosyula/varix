@@ -98,12 +98,13 @@ def execute_run(
     # Gather disambiguation replays for DOWNSTREAM-with-variance steps when
     # the adapter supports replay. Cost flows into the same accumulator.
     replays_by_step: dict[str, list[StepRun]] = {}
+    replay_notes: list[str] = []
     if len(runs) >= 2:
         # Raise StructuralMismatch upfront — analyze() would raise it anyway,
         # but the localizer below would crash first on variant step counts.
         detect_structural_mismatch(runs)
         outcomes_for_replay = Localizer(metric=metric).classify_steps(runs)
-        replays_by_step = asyncio.run(
+        replays_by_step, replay_notes = asyncio.run(
             gather_disambiguation_replays(
                 adapter,
                 runs,
@@ -132,7 +133,7 @@ def execute_run(
         finished_at=finished,
         total_cost=cost.snapshot(),
         step_replays={sid: tuple(rs) for sid, rs in replays_by_step.items()},
-        notes=(*notes, *result.notes),
+        notes=(*notes, *replay_notes, *result.notes),
         capabilities=adapter.capabilities(),
     )
 
