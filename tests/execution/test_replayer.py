@@ -90,3 +90,110 @@ async def test_replay_n_refuses_before_any_call() -> None:
     adapter: Adapter = _NoReplayAdapter()
     with pytest.raises(CapabilityMissing):
         await replay_n(adapter, "s2", "hello", n=1)
+
+
+# --- gather_disambiguation_replays --------------------------------------------
+
+
+from varix.core import LocalizationOutcome  # noqa: E402
+from varix.execution import gather_disambiguation_replays  # noqa: E402
+from varix.execution.runner import CostAccumulator, run_n  # noqa: E402
+
+
+@pytest.mark.asyncio
+async def test_gather_returns_empty_when_replay_unsupported() -> None:
+    """Adapter without replay capability: no replays attempted, empty dict."""
+    adapter: Adapter = _NoReplayAdapter()
+    out = await gather_disambiguation_replays(
+        adapter, runs=[], outcomes={"s1": LocalizationOutcome.DOWNSTREAM}
+    )
+    assert out == {}
+
+
+@pytest.mark.asyncio
+async def test_gather_skips_deterministic_and_source_steps() -> None:
+    """Only DOWNSTREAM steps with output variance trigger replays."""
+    adapter = FakeAdapter()
+    runs = await run_n(adapter, "hi", n=3)
+    outcomes = {
+        "s1": LocalizationOutcome.DETERMINISTIC,
+        "s2": LocalizationOutcome.SOURCE,
+        # No DOWNSTREAM step → nothing to replay.
+    }
+    out = await gather_disambiguation_replays(adapter, runs, outcomes, k=3)
+    assert out == {}
+
+
+@pytest.mark.asyncio
+async def test_gather_replays_downstream_with_variance() -> None:
+    """A DOWNSTREAM step whose outputs vary gets replayed k times."""
+    # FakeAdapter with PROMPT_SIDE on s2 makes s2 a SOURCE and s3+ cascade as
+    # DOWNSTREAM with varying outputs (the prompt-side suffix propagates).
+    adapter = FakeAdapter(variance={"s2": Classification.PROMPT_SIDE})
+    runs = await run_n(adapter, "hi", n=3)
+    outcomes = {"s3": LocalizationOutcome.DOWNSTREAM}
+    out = await gather_disambiguation_replays(adapter, runs, outcomes, k=3)
+    assert "s3" in out
+    assert len(out["s3"]) == 3
+    assert all(sr.step_id == "s3" for sr in out["s3"])
+
+
+@pytest.mark.asyncio
+async def test_gather_honors_max_cost_and_stops_partway() -> None:
+    """Budget exhaustion bails gracefully without raising."""
+
+    class _CostlyReplay(FakeAdapter):
+        async def replay_step(
+            self, step_id: str, fixed_inputs: Any, seed: int | None = None
+        ) -> StepRun:
+            sr = await super().replay_step(step_id, fixed_inputs, seed)
+            # Each replay claims $0.01 — pushing past tight budgets quickly.
+            from varix.core import CostSnapshot
+
+            return StepRun(
+                step_id=sr.step_id,
+                inputs=sr.inputs,
+                output=sr.output,
+                tool_calls=sr.tool_calls,
+                provider_metadata=sr.provider_metadata,
+                cost=CostSnapshot(dollars=0.01),
+                seed=sr.seed,
+            )
+
+    adapter = _CostlyReplay(variance={"s2": Classification.PROMPT_SIDE})
+    runs = await run_n(adapter, "hi", n=3)
+    cost = CostAccumulator()
+    out = await gather_disambiguation_replays(
+        adapter,
+        runs,
+        {"s3": LocalizationOutcome.DOWNSTREAM},
+        k=5,
+        cost=cost,
+        max_cost=0.025,  # allows ~2 replays before exhaustion
+    )
+    assert "s3" in out
+    assert len(out["s3"]) < 5  # bailed early
+
+
+@pytest.mark.asyncio
+async def test_gather_continues_other_steps_when_one_step_raises() -> None:
+    """If replay_step raises mid-gather, that step stops; others proceed."""
+
+    class _RaisingOnS3(FakeAdapter):
+        async def replay_step(
+            self, step_id: str, fixed_inputs: Any, seed: int | None = None
+        ) -> StepRun:
+            if step_id == "s3":
+                raise RuntimeError("transient failure")
+            return await super().replay_step(step_id, fixed_inputs, seed)
+
+    adapter = _RaisingOnS3(variance={"s2": Classification.PROMPT_SIDE})
+    runs = await run_n(adapter, "hi", n=3)
+    outcomes = {
+        "s3": LocalizationOutcome.DOWNSTREAM,
+        "s4": LocalizationOutcome.DOWNSTREAM,
+    }
+    out = await gather_disambiguation_replays(adapter, runs, outcomes, k=3)
+    # s3 failed → either absent or empty; s4 succeeded with K replays.
+    assert "s4" in out and len(out["s4"]) == 3
+    assert out.get("s3", []) == []

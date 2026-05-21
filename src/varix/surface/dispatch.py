@@ -12,7 +12,13 @@ import dataclasses
 import os
 from pathlib import Path
 
-from varix.analysis import ImpactEstimator, analyze, infer_capabilities
+from varix.analysis import (
+    ImpactEstimator,
+    analyze,
+    detect_structural_mismatch,
+    infer_capabilities,
+)
+from varix.analysis.localizer import Localizer
 from varix.core import (
     SCHEMA_VERSION,
     BudgetExceeded,
@@ -21,10 +27,11 @@ from varix.core import (
     PipelineAnalysis,
     Rng,
     RunFailed,
+    StepRun,
     SystemClock,
     SystemRng,
 )
-from varix.execution import CostAccumulator, run_n
+from varix.execution import CostAccumulator, gather_disambiguation_replays, run_n
 from varix.surface.loader import load_adapter
 from varix.surface.reporter import (
     render_analysis,
@@ -84,10 +91,32 @@ def execute_run(
             "variance analysis requires at least 2 runs to compare"
         )
 
+    metric = ExactMatch()
+
+    # Gather disambiguation replays for DOWNSTREAM-with-variance steps when
+    # the adapter supports replay. Cost flows into the same accumulator.
+    replays_by_step: dict[str, list[StepRun]] = {}
+    if len(runs) >= 2:
+        # Raise StructuralMismatch upfront — analyze() would raise it anyway,
+        # but the localizer below would crash first on variant step counts.
+        detect_structural_mismatch(runs)
+        outcomes_for_replay = Localizer(metric=metric).classify_steps(runs)
+        replays_by_step = asyncio.run(
+            gather_disambiguation_replays(
+                adapter,
+                runs,
+                outcomes_for_replay,
+                metric=metric,
+                cost=cost,
+                max_cost=max_cost,
+            )
+        )
+
     finished = actual_clock.now()
 
-    metric = ExactMatch()
-    result = analyze(runs, adapter.capabilities(), metric=metric)
+    result = analyze(
+        runs, adapter.capabilities(), metric=metric, replays_by_step=replays_by_step
+    )
 
     analysis = PipelineAnalysis(
         analysis_id=actual_rng.new_id(),
@@ -100,7 +129,7 @@ def execute_run(
         started_at=started,
         finished_at=finished,
         total_cost=cost.snapshot(),
-        step_replays={},
+        step_replays={sid: tuple(rs) for sid, rs in replays_by_step.items()},
         notes=(*notes, *result.notes),
         capabilities=adapter.capabilities(),
     )

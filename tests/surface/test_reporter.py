@@ -444,7 +444,7 @@ def test_rank_source_step_ids_propagates_first_then_absorbed() -> None:
         finished_at=_FROZEN,
         total_cost=CostSnapshot(),
     )
-    ranked = _rank_source_step_ids(runs, outcomes, ["a", "b", "c"])
+    ranked = _rank_source_step_ids(runs, outcomes, ["a", "b", "c"], {})
     # `a` propagates (final c varies); `c` is the final step → ABSORBED special-case.
     assert ranked == ["a", "c"]
 
@@ -462,7 +462,7 @@ def test_rank_source_step_ids_skips_non_sources() -> None:
         ),
     )
     outcomes = {"a": LocalizationOutcome.DETERMINISTIC}
-    assert _rank_source_step_ids(runs, outcomes, ["a"]) == []
+    assert _rank_source_step_ids(runs, outcomes, ["a"], {}) == []
 
 
 def test_format_receipt_assembles_n_cost_duration_short_id() -> None:
@@ -544,3 +544,141 @@ def test_render_source_step_with_unavailable_finding_says_cannot_verify() -> Non
     assert "step `s1`" in report
     assert "cannot verify" in report
     assert "provider-side, propagates" not in report
+
+
+# --- replay-promoted sources in the headline ---------------------------------
+
+
+def test_replay_promoted_downstream_step_appears_in_headline() -> None:
+    """A DOWNSTREAM step with replay_disambiguation evidence should be ranked
+    as a source in the headline, alongside any topmost SOURCE steps."""
+    from varix.core import (
+        Classification,
+        Confidence,
+        CostSnapshot,
+        Evidence,
+        Finding,
+        LocalizationOutcome,
+        PipelineAnalysis,
+        PipelineRun,
+        StepRun,
+    )
+    from varix.surface.reporter import render_analysis
+
+    # Two-step pipeline: s1 is the topmost SOURCE, s2 is DOWNSTREAM-with-own-
+    # variance (replay disambiguated). Both should headline.
+    def _run(rid: str, s1_out: str, s2_out: str) -> PipelineRun:
+        return PipelineRun(
+            run_id=rid,
+            step_runs=(
+                StepRun(step_id="s1", inputs="in", output=s1_out),
+                StepRun(step_id="s2", inputs=s1_out, output=s2_out),
+            ),
+            started_at=_FROZEN,
+            finished_at=_FROZEN,
+        )
+
+    findings = (
+        Finding(
+            step_id="s1",
+            localization=LocalizationOutcome.SOURCE,
+            confidence=Confidence.HIGH,
+            metric_name="exact",
+            classification=Classification.TOOL_SIDE,
+        ),
+        Finding(
+            step_id="s2",
+            localization=LocalizationOutcome.DOWNSTREAM,
+            confidence=Confidence.LOW,
+            metric_name="exact",
+            classification=Classification.TIME_OR_STATE,
+            evidence=(
+                Evidence(
+                    kind="replay_disambiguation",
+                    description="3 replays, 3 unique outputs",
+                    data={"replay_count": 3, "unique_output_count": 3},
+                ),
+            ),
+        ),
+    )
+    analysis = PipelineAnalysis(
+        analysis_id="promoted-test",
+        pipeline_name="fake",
+        n=3,
+        metric_name="exact",
+        schema_version="0.2",
+        runs=(
+            _run("r1", "s1_a", "s2_a"),
+            _run("r2", "s1_b", "s2_b"),
+            _run("r3", "s1_c", "s2_c"),
+        ),
+        findings=findings,
+        started_at=_FROZEN,
+        finished_at=_FROZEN,
+        total_cost=CostSnapshot(),
+    )
+    report = render_analysis(analysis)
+    assert "Found 2 sources of nondeterminism" in report
+    assert "step `s1`" in report
+    assert "step `s2`" in report
+
+
+def test_explain_renders_replay_disambiguation_footer() -> None:
+    """`varix explain` on a DOWNSTREAM step with replay_disambiguation
+    evidence must surface the disambiguation footer."""
+    from varix.core import (
+        Classification,
+        Confidence,
+        CostSnapshot,
+        Evidence,
+        Finding,
+        LocalizationOutcome,
+        PipelineAnalysis,
+        PipelineRun,
+        StepRun,
+    )
+    from varix.surface.reporter import render_explain
+
+    finding = Finding(
+        step_id="s2",
+        localization=LocalizationOutcome.DOWNSTREAM,
+        confidence=Confidence.LOW,
+        metric_name="exact",
+        classification=Classification.TIME_OR_STATE,
+        evidence=(
+            Evidence(
+                kind="time_or_state_markers",
+                description="1 heuristic marker(s) observed",
+                data={"markers": [{"kind": "time_tool_name", "tools": ["current_time"]}]},
+            ),
+            Evidence(
+                kind="replay_disambiguation",
+                description="3 replays, 3 unique outputs",
+                data={"replay_count": 3, "unique_output_count": 3},
+            ),
+        ),
+    )
+    analysis = PipelineAnalysis(
+        analysis_id="explain-replay",
+        pipeline_name="fake",
+        n=3,
+        metric_name="exact",
+        schema_version="0.2",
+        runs=(
+            PipelineRun(
+                run_id=f"r{i}",
+                step_runs=(StepRun(step_id="s2", inputs=f"in_{i}", output=f"out_{i}"),),
+                started_at=_FROZEN,
+                finished_at=_FROZEN,
+            )
+            for i in range(3)
+        ),
+        findings=(finding,),
+        started_at=_FROZEN,
+        finished_at=_FROZEN,
+        total_cost=CostSnapshot(),
+    )
+    out = render_explain(analysis, "s2")
+    assert "Replay disambiguation:" in out
+    assert "Replayed 3 times" in out
+    assert "3 unique outputs" in out

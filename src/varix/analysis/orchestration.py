@@ -12,8 +12,10 @@ runs aren't comparable.
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from typing import Any
 
 from varix.analysis.classifiers import (
     OrderingClassifier,
@@ -26,6 +28,8 @@ from varix.analysis.localizer import Localizer
 from varix.analysis.registry import ClassifierRegistry
 from varix.core import (
     AdapterCapabilities,
+    Confidence,
+    Evidence,
     ExactMatch,
     Finding,
     LocalizationOutcome,
@@ -128,20 +132,93 @@ def analyze(
     replays = replays_by_step or {}
     findings: list[Finding] = []
     for step_id, outcome in outcomes.items():
+        step_replays = list(replays.get(step_id, []))
         step_findings = registry.classify_step(
             step_id=step_id,
             localization=outcome,
             runs=runs,
-            replays=list(replays.get(step_id, [])),
+            replays=step_replays,
             capabilities=capabilities,
             metric=actual_metric,
         )
+        # If replays (held at fixed inputs) still vary, the step is its own
+        # source. Surface this via evidence — localization stays DOWNSTREAM.
+        if (
+            outcome is LocalizationOutcome.DOWNSTREAM
+            and len(step_replays) >= 2
+            and _replays_show_independent_variance(step_replays, actual_metric)
+        ):
+            if step_findings:
+                # Attach to the first finding only; otherwise the footer
+                # would repeat in `varix explain`.
+                step_findings = [
+                    _attach_replay_disambiguation(
+                        step_findings[0], step_replays, actual_metric
+                    ),
+                    *step_findings[1:],
+                ]
+            else:
+                # Independent variance with no classifier match (e.g. LLM
+                # drift at temp=0 with no tools). Synthesize a placeholder.
+                step_findings = [
+                    _synthesize_replay_promoted_finding(
+                        step_id, step_replays, actual_metric
+                    )
+                ]
         findings.extend(step_findings)
 
     return AnalysisResult(
         outcomes=dict(outcomes),
         findings=tuple(findings),
         notes=_summarize_exclusions(findings),
+    )
+
+
+def _replays_show_independent_variance(
+    replays: Sequence[StepRun], metric: VarianceMetric
+) -> bool:
+    """True if the replays (sharing fixed inputs) produced varying outputs."""
+    first = replays[0].output
+    return any(not metric.equivalent(first, r.output) for r in replays[1:])
+
+
+def _attach_replay_disambiguation(
+    finding: Finding, replays: Sequence[StepRun], metric: VarianceMetric
+) -> Finding:
+    """Append a `replay_disambiguation` evidence record to `finding`."""
+    return dataclasses.replace(
+        finding, evidence=(*finding.evidence, _replay_evidence(replays, metric))
+    )
+
+
+def _synthesize_replay_promoted_finding(
+    step_id: str, replays: Sequence[StepRun], metric: VarianceMetric
+) -> Finding:
+    """Placeholder finding when replay proves independent variance but no
+    classifier signal matched."""
+    return Finding(
+        step_id=step_id,
+        localization=LocalizationOutcome.DOWNSTREAM,
+        confidence=Confidence.MEDIUM,
+        metric_name=metric.name(),
+        classification=None,
+        reason="varies under fixed inputs but no classifier signal matched",
+        evidence=(_replay_evidence(replays, metric),),
+    )
+
+
+def _replay_evidence(replays: Sequence[StepRun], metric: VarianceMetric) -> Evidence:
+    unique: list[Any] = []
+    for r in replays:
+        if not any(metric.equivalent(r.output, u) for u in unique):
+            unique.append(r.output)
+    return Evidence(
+        kind="replay_disambiguation",
+        description=(
+            f"Replayed {len(replays)} times with fixed inputs; "
+            f"observed {len(unique)} unique outputs."
+        ),
+        data={"replay_count": len(replays), "unique_output_count": len(unique)},
     )
 
 

@@ -168,3 +168,68 @@ async def test_fake_adapter_structure_variance_triggers_refusal() -> None:
     # Run 1: 5 steps, run 2: 3 steps, run 3: 5 steps → analyze refuses.
     with pytest.raises(StructuralMismatch):
         analyze(runs, adapter.capabilities())
+
+
+# --- replay disambiguation evidence -------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_analyze_attaches_replay_disambiguation_evidence() -> None:
+    """When DOWNSTREAM step's replays show independent variance, findings on
+    that step get a replay_disambiguation evidence record."""
+    # PROMPT_SIDE on s2 → s2 is SOURCE, s3+ are DOWNSTREAM with varying output.
+    adapter = FakeAdapter(variance={"s2": Classification.PROMPT_SIDE})
+    runs = await run_n(adapter, "hi", n=3)
+    # Synthesize replays for s3 with deliberately varying outputs to simulate
+    # what gather_disambiguation_replays would produce on a step with its own
+    # independent variance.
+    s3_replays = (
+        StepRun(step_id="s3", inputs="fixed", output="r1"),
+        StepRun(step_id="s3", inputs="fixed", output="r2"),
+        StepRun(step_id="s3", inputs="fixed", output="r3"),
+    )
+    result = analyze(runs, adapter.capabilities(), replays_by_step={"s3": s3_replays})
+
+    s3_findings = [f for f in result.findings if f.step_id == "s3"]
+    assert s3_findings, "expected at least one finding on s3"
+    for f in s3_findings:
+        kinds = [ev.kind for ev in f.evidence]
+        assert "replay_disambiguation" in kinds
+
+
+@pytest.mark.asyncio
+async def test_analyze_does_not_attach_evidence_when_replays_are_stable() -> None:
+    """If replays produce identical outputs, the step is NOT independently
+    a source — no disambiguation evidence."""
+    adapter = FakeAdapter(variance={"s2": Classification.PROMPT_SIDE})
+    runs = await run_n(adapter, "hi", n=3)
+    # All replays identical — no independent variance.
+    s3_replays = (
+        StepRun(step_id="s3", inputs="fixed", output="same"),
+        StepRun(step_id="s3", inputs="fixed", output="same"),
+        StepRun(step_id="s3", inputs="fixed", output="same"),
+    )
+    result = analyze(runs, adapter.capabilities(), replays_by_step={"s3": s3_replays})
+    for f in result.findings:
+        if f.step_id == "s3":
+            for ev in f.evidence:
+                assert ev.kind != "replay_disambiguation"
+
+
+@pytest.mark.asyncio
+async def test_analyze_does_not_attach_evidence_on_source_step() -> None:
+    """SOURCE steps are already correctly classified — they don't need
+    disambiguation even if replays were provided (which shouldn't happen
+    in practice, but the analyze logic must not over-apply)."""
+    adapter = FakeAdapter(variance={"s2": Classification.PROMPT_SIDE})
+    runs = await run_n(adapter, "hi", n=3)
+    # Pretend replays were gathered for s2 (the SOURCE) anyway.
+    s2_replays = (
+        StepRun(step_id="s2", inputs="fixed", output="v1"),
+        StepRun(step_id="s2", inputs="fixed", output="v2"),
+    )
+    result = analyze(runs, adapter.capabilities(), replays_by_step={"s2": s2_replays})
+    for f in result.findings:
+        if f.step_id == "s2":
+            kinds = [ev.kind for ev in f.evidence]
+            assert "replay_disambiguation" not in kinds

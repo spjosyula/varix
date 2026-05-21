@@ -93,17 +93,34 @@ def _format_relative_time(when: datetime, now: datetime) -> str:
     return f"{days} {unit} ago"
 
 
+def _has_replay_disambiguation(findings: Sequence[Finding]) -> bool:
+    """True if any finding for this step carries `replay_disambiguation` evidence."""
+    return any(
+        ev.kind == "replay_disambiguation"
+        for f in findings
+        for ev in f.evidence
+    )
+
+
 def _rank_source_step_ids(
     runs: Sequence[PipelineRun],
     outcomes: Mapping[str, LocalizationOutcome],
     pipeline_step_ids: Sequence[str],
+    findings_by_step: Mapping[str, Sequence[Finding]],
 ) -> list[str]:
-    """Order SOURCE step ids by impact (PROPAGATES first), then pipeline order within tier."""
+    """Order effective-source step ids by impact (PROPAGATES first), then by
+    pipeline order. Effective-source = localizer-SOURCE OR DOWNSTREAM with
+    `replay_disambiguation` evidence."""
     estimator = ImpactEstimator()
     propagates: list[str] = []
     absorbed: list[str] = []
     for sid in pipeline_step_ids:
-        if outcomes.get(sid) is not LocalizationOutcome.SOURCE:
+        outcome = outcomes.get(sid)
+        is_promoted = (
+            outcome is LocalizationOutcome.DOWNSTREAM
+            and _has_replay_disambiguation(findings_by_step.get(sid, ()))
+        )
+        if outcome is not LocalizationOutcome.SOURCE and not is_promoted:
             continue
         report = estimator.estimate(runs, sid)
         if report.behavior is ImpactBehavior.PROPAGATES:
@@ -335,7 +352,7 @@ def render_analysis(
         lines.append(_format_receipt(analysis, now=now, replayed=replayed))
         return "\n".join(lines)
 
-    sources = _rank_source_step_ids(analysis.runs, outcomes, step_ids)
+    sources = _rank_source_step_ids(analysis.runs, outcomes, step_ids, findings_by_step)
     estimator = ImpactEstimator()
     impacts = {sid: estimator.estimate(analysis.runs, sid).behavior for sid in sources}
 
@@ -635,22 +652,40 @@ def _explain_unavailable(finding: Finding, step_id: str) -> list[str]:
 def _explain_block(finding: Finding, analysis: PipelineAnalysis, step_id: str) -> list[str]:
     """Per-finding prose body. UNAVAILABLE first; classification dispatch otherwise."""
     if finding.confidence is Confidence.UNAVAILABLE:
-        return _explain_unavailable(finding, step_id)
-    if finding.classification is Classification.PROVIDER_SIDE:
-        return _explain_provider_side(finding, analysis, step_id)
-    if finding.classification is Classification.PROMPT_SIDE:
-        return _explain_prompt_side(finding, analysis, step_id)
-    if finding.classification is Classification.TOOL_SIDE:
-        return _explain_tool_side(finding, analysis, step_id)
-    if finding.classification is Classification.ORDERING:
-        return _explain_ordering(finding, analysis, step_id)
-    if finding.classification is Classification.TIME_OR_STATE:
-        return _explain_time_or_state(finding, analysis, step_id)
-    # Fallback for findings without a classification — should not normally occur.
-    out = [_explain_headline(finding, step_id)]
-    if finding.reason:
-        out.extend(["", f"Reason: {finding.reason}"])
-    return out
+        lines = _explain_unavailable(finding, step_id)
+    elif finding.classification is Classification.PROVIDER_SIDE:
+        lines = _explain_provider_side(finding, analysis, step_id)
+    elif finding.classification is Classification.PROMPT_SIDE:
+        lines = _explain_prompt_side(finding, analysis, step_id)
+    elif finding.classification is Classification.TOOL_SIDE:
+        lines = _explain_tool_side(finding, analysis, step_id)
+    elif finding.classification is Classification.ORDERING:
+        lines = _explain_ordering(finding, analysis, step_id)
+    elif finding.classification is Classification.TIME_OR_STATE:
+        lines = _explain_time_or_state(finding, analysis, step_id)
+    else:
+        # Fallback for findings without a classification — should not normally occur.
+        lines = [_explain_headline(finding, step_id)]
+        if finding.reason:
+            lines.extend(["", f"Reason: {finding.reason}"])
+    lines.extend(_explain_replay_disambiguation(finding))
+    return lines
+
+
+def _explain_replay_disambiguation(finding: Finding) -> list[str]:
+    """Footer block surfacing replay-disambiguation evidence when present."""
+    for ev in finding.evidence:
+        if ev.kind != "replay_disambiguation":
+            continue
+        k = int(ev.data.get("replay_count", 0))
+        u = int(ev.data.get("unique_output_count", 0))
+        return [
+            "",
+            "Replay disambiguation:",
+            f"  Replayed {k} times with fixed inputs; observed {u} unique outputs.",
+            "  The step has its own variance source — not just cascade from upstream.",
+        ]
+    return []
 
 
 def render_explain(analysis: PipelineAnalysis, step_id: str) -> str:
@@ -767,8 +802,16 @@ def _list_summary(analysis: PipelineAnalysis) -> str:
     if analysis.n < 2:
         return f"inconclusive (n={analysis.n})"
 
+    # Effective sources: localizer-SOURCE plus DOWNSTREAM steps that replay
+    # disambiguated as independently varying.
+    findings_by_step: dict[str, list[Finding]] = {}
+    for f in analysis.findings:
+        findings_by_step.setdefault(f.step_id, []).append(f)
     source_steps = sorted(
-        {f.step_id for f in analysis.findings if f.localization is LocalizationOutcome.SOURCE}
+        sid
+        for sid, fs in findings_by_step.items()
+        if any(f.localization is LocalizationOutcome.SOURCE for f in fs)
+        or _has_replay_disambiguation(fs)
     )
     if source_steps:
         estimator = ImpactEstimator()
